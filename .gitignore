@@ -44,3 +44,7 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
+# Logs
+logs/
+*.log
+
