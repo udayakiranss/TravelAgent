@@ -119,18 +119,8 @@ Return ONLY a valid JSON object with these fields. Example:
 @log_critical_entry_exit
 def main():
     """Main entry point for the travel booking system"""
-    # Setup logger
-    log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-    log_output = os.getenv('LOG_OUTPUT', 'stdout')  # stdout, file, or both
-    log_file = os.getenv('LOG_FILE', None)
-    log_dir = os.getenv('LOG_DIR', 'logs')
-    
-    logger.setup(
-        level=log_level,
-        output=log_output,
-        log_file=log_file,
-        log_dir=log_dir
-    )
+    # Setup logger (reads from environment variables: LOG_LEVEL, LOG_OUTPUT, LOG_FILE, LOG_DIR)
+    logger.setup()
     
     # Create new session
     session_id = SessionContext.new_session()
@@ -178,9 +168,9 @@ def main():
     
     # Example queries
     examples = [
-        'Find me a flight from NYC to LON on 2025-08-12 and book a hotel',
-        'I need a rental car in LON for my trip',
-        'Charge my Visa to pay the total'
+        'Find me a flight from NYC to LON on 2025-08-12 and book a hotel'
+        # 'I need a rental car in LON for my trip',
+        # 'Charge my Visa to pay the total'
     ]
     
     for i, ex in enumerate(examples, 1):

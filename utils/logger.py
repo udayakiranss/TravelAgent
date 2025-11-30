@@ -80,19 +80,31 @@ class TravelBookingLogger:
             self._initialized = True
     
     def setup(self, 
-              level: str = "INFO",
-              output: str = "stdout",
+              level: Optional[str] = None,
+              output: Optional[str] = None,
               log_file: Optional[str] = None,
-              log_dir: str = "logs") -> None:
+              log_dir: Optional[str] = None) -> None:
         """
         Setup logger configuration
         
         Args:
-            level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-            output: Output destination ('stdout', 'file', or 'both')
-            log_file: Log file name (if None, auto-generates based on timestamp)
-            log_dir: Directory for log files
+            level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). 
+                   If None, reads from LOG_LEVEL environment variable (default: INFO)
+            output: Output destination ('stdout', 'file', or 'both').
+                    If None, reads from LOG_OUTPUT environment variable (default: stdout)
+            log_file: Log file name (if None, reads from LOG_FILE env var or auto-generates)
+            log_dir: Directory for log files. If None, reads from LOG_DIR env var (default: logs)
         """
+        # Read from environment variables if not provided
+        if level is None:
+            level = os.getenv('LOG_LEVEL', 'INFO')
+        if output is None:
+            output = os.getenv('LOG_OUTPUT', 'stdout')
+        if log_file is None:
+            log_file = os.getenv('LOG_FILE', None)
+        if log_dir is None:
+            log_dir = os.getenv('LOG_DIR', 'logs')
+        
         # Clear existing handlers
         self._logger.handlers.clear()
         
@@ -115,8 +127,8 @@ class TravelBookingLogger:
         
         # Setup file handler
         if output in ('file', 'both'):
-            # Create log directory if it doesn't exist
-            log_path = Path(log_dir)
+            # Create log directory if it doesn't exist (use absolute path)
+            log_path = Path(log_dir).resolve()
             log_path.mkdir(parents=True, exist_ok=True)
             
             # Generate log file name if not provided
@@ -126,12 +138,24 @@ class TravelBookingLogger:
             
             log_file_path = log_path / log_file
             
-            file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
+            file_handler = logging.FileHandler(str(log_file_path), mode='a', encoding='utf-8')
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
             self._logger.addHandler(file_handler)
             
-            self._logger.info(f"Logging to file: {log_file_path}")
+            # Log to file (this will go to the file handler we just added)
+            # Use the underlying logger directly to avoid our custom _log method during setup
+            record = self._logger.makeRecord(
+                self._logger.name,
+                logging.INFO,
+                os.path.basename(__file__),
+                0,
+                f"Logging to file: {log_file_path}",
+                (),
+                None,
+                'setup'
+            )
+            self._logger.handle(record)
     
     def get_logger(self) -> logging.Logger:
         """Get the underlying logger instance"""
