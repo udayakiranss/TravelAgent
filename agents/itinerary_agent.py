@@ -226,8 +226,8 @@ def get_itinerary_tool(query: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @tool
-def list_itineraries_tool(query: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """List all itineraries. Returns list of itinerary summaries."""
+def list_itineraries_tool(query: Dict[str, Any]) -> Dict[str, Any]:
+    """List all itineraries. Returns dict with items, total, page, limit, and has_more."""
     traveler_name = query.get('traveler_name')
     status = query.get('status')
     page = query.get('page', 1)
@@ -258,24 +258,33 @@ def list_itineraries_tool(query: Dict[str, Any]) -> List[Dict[str, Any]]:
         logger.info(f"Found {total} itineraries (DB), returning page {page}")
         return result
     else:
-        # In-memory mode
-        if traveler_name:
-            # Filter by traveler name
-            filtered = [
-                {k: v for k, v in it.items() if k != 'flight' and k != 'hotel' and k != 'car'}
-                for it in _ITINERARIES.values()
-                if it.get('traveler') == traveler_name
-            ]
-            logger.info(f"Found {len(filtered)} itineraries for traveler {traveler_name}")
-            return filtered
-        else:
-            # Return all itinerary summaries
-            all_itineraries = [
-                {k: v for k, v in it.items() if k != 'flight' and k != 'hotel' and k != 'car'}
-                for it in _ITINERARIES.values()
-            ]
-            logger.info(f"Found {len(all_itineraries)} total itineraries")
-            return all_itineraries
+        # In-memory mode - return same structure for consistency
+        all_items = []
+        for it in _ITINERARIES.values():
+            # Filter by traveler if specified
+            if traveler_name and it.get('traveler') != traveler_name:
+                continue
+            # Filter by status if specified
+            if status and it.get('status') != status:
+                continue
+            # Create summary (exclude detailed booking data)
+            summary = {k: v for k, v in it.items() if k not in ('flight', 'hotel', 'car')}
+            all_items.append(summary)
+        
+        # Apply pagination
+        total = len(all_items)
+        offset = (max(1, page) - 1) * limit
+        paginated_items = all_items[offset:offset + limit]
+        
+        result = {
+            "items": paginated_items,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "has_more": (page * limit) < total
+        }
+        logger.info(f"Found {total} itineraries (memory), returning page {page}")
+        return result
 
 
 # =============================================================================
