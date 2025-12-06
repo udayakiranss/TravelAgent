@@ -37,7 +37,10 @@ from database.repository import (
 from database.models import Itinerary
 from agents.llm_provider import LLMProvider
 from agents.orchestrator import Orchestrator
+from utils.logger import get_logger, log_method_entry_exit
 
+# Initialize logger
+logger = get_logger()
 
 # Create router with /api/v1 prefix
 router = APIRouter(prefix="/api/v1", tags=["Travel Booking API"])
@@ -96,13 +99,16 @@ def health_check(
     llm: Optional[LLMProvider] = Depends(get_llm),
 ):
     """Health check endpoint."""
+    logger.debug("Health check requested")
+    
     # Check database
     db_status = "connected"
     try:
         from sqlalchemy import text
         db.execute(text("SELECT 1"))
-    except Exception:
+    except Exception as e:
         db_status = "error"
+        logger.error(f"Database health check failed: {e}")
     
     # Check LLM
     llm_status = "available" if llm else "unavailable"
@@ -113,6 +119,8 @@ def health_check(
         overall = "unhealthy"
     elif llm_status == "unavailable":
         overall = "degraded"
+    
+    logger.info(f"Health check: status={overall}, db={db_status}, llm={llm_status}")
     
     return HealthResponse(
         status=overall,
@@ -137,6 +145,8 @@ def create_itinerary(
     db: Session = Depends(get_db),
 ):
     """Create a new draft itinerary."""
+    logger.info(f"Creating itinerary for traveler_id={request.traveler_id}")
+    
     repo = ItineraryRepository(db)
     
     itinerary = repo.create(
@@ -144,6 +154,7 @@ def create_itinerary(
         original_query=request.original_query,
     )
     
+    logger.info(f"Created itinerary id={itinerary.id}")
     return itinerary_to_response(itinerary)
 
 
@@ -161,6 +172,8 @@ def list_itineraries(
     db: Session = Depends(get_db),
 ):
     """List itineraries with pagination."""
+    logger.debug(f"Listing itineraries: status={status}, traveler_id={traveler_id}, page={page}, limit={limit}")
+    
     repo = ItineraryRepository(db)
     
     itineraries, total = repo.list_all(
@@ -169,6 +182,8 @@ def list_itineraries(
         page=page,
         limit=limit,
     )
+    
+    logger.info(f"Listed itineraries: returned {len(itineraries)} of {total} total")
     
     return ItineraryListResponse(
         items=[itinerary_to_response(it) for it in itineraries],
@@ -190,12 +205,16 @@ def get_itinerary(
     db: Session = Depends(get_db),
 ):
     """Get itinerary by ID."""
+    logger.debug(f"Getting itinerary id={itinerary_id}")
+    
     repo = ItineraryRepository(db)
     
     try:
         itinerary = repo.get_by_id_or_raise(itinerary_id)
+        logger.debug(f"Found itinerary id={itinerary_id}, status={itinerary.status}")
         return itinerary_to_response(itinerary)
     except ItineraryNotFoundError:
+        logger.warning(f"Itinerary not found: id={itinerary_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=create_error_response(
@@ -218,6 +237,8 @@ def update_itinerary(
     db: Session = Depends(get_db),
 ):
     """Update itinerary with optimistic locking."""
+    logger.info(f"Updating itinerary id={itinerary_id}, version={request.version}")
+    
     repo = ItineraryRepository(db)
     
     try:
@@ -235,10 +256,14 @@ def update_itinerary(
         if request.car_data is not None or "car_data" in request.model_fields_set:
             kwargs["car_data"] = request.car_data
         
+        logger.debug(f"Update fields: {list(kwargs.keys())}")
+        
         itinerary = repo.update(**kwargs)
+        logger.info(f"Updated itinerary id={itinerary_id}, new_version={itinerary.version}")
         return itinerary_to_response(itinerary)
         
     except ItineraryNotFoundError:
+        logger.warning(f"Update failed - itinerary not found: id={itinerary_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=create_error_response(
@@ -248,6 +273,7 @@ def update_itinerary(
             )
         )
     except VersionConflictError as e:
+        logger.warning(f"Version conflict on itinerary id={itinerary_id}: expected={e.expected_version}, current={e.current_version}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=create_error_response(
@@ -258,6 +284,7 @@ def update_itinerary(
             )
         )
     except InvalidStatusTransitionError as e:
+        logger.warning(f"Cannot modify itinerary id={itinerary_id} in status={e.current_status}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=create_error_response(
@@ -280,15 +307,19 @@ def delete_itinerary(
     db: Session = Depends(get_db),
 ):
     """Delete a draft itinerary."""
+    logger.info(f"Deleting itinerary id={itinerary_id}")
+    
     repo = ItineraryRepository(db)
     
     try:
         repo.delete(itinerary_id)
+        logger.info(f"Deleted itinerary id={itinerary_id}")
         return ItineraryDeleteResponse(
             success=True,
             message=f"Itinerary {itinerary_id} deleted successfully"
         )
     except ItineraryNotFoundError:
+        logger.warning(f"Delete failed - itinerary not found: id={itinerary_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=create_error_response(
@@ -298,6 +329,7 @@ def delete_itinerary(
             )
         )
     except InvalidStatusTransitionError as e:
+        logger.warning(f"Cannot delete itinerary id={itinerary_id} in status={e.current_status}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=create_error_response(
@@ -323,16 +355,20 @@ def confirm_itinerary(
     db: Session = Depends(get_db),
 ):
     """Confirm a draft itinerary."""
+    logger.info(f"Confirming itinerary id={itinerary_id}")
+    
     repo = ItineraryRepository(db)
     
     try:
         itinerary = repo.confirm(itinerary_id)
+        logger.info(f"Confirmed itinerary id={itinerary_id}")
         return ItineraryStatusResponse(
             id=itinerary.id,
             status=itinerary.status,
             message="Itinerary confirmed successfully"
         )
     except ItineraryNotFoundError:
+        logger.warning(f"Confirm failed - itinerary not found: id={itinerary_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=create_error_response(
@@ -342,6 +378,7 @@ def confirm_itinerary(
             )
         )
     except InvalidStatusTransitionError as e:
+        logger.warning(f"Cannot confirm itinerary id={itinerary_id} in status={e.current_status}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=create_error_response(
@@ -363,10 +400,13 @@ def cancel_itinerary(
     db: Session = Depends(get_db),
 ):
     """Cancel an itinerary."""
+    logger.info(f"Cancelling itinerary id={itinerary_id}")
+    
     repo = ItineraryRepository(db)
     
     try:
         itinerary = repo.cancel(itinerary_id)
+        logger.info(f"Cancelled itinerary id={itinerary_id}")
         return ItineraryStatusResponse(
             id=itinerary.id,
             status=itinerary.status,
@@ -374,6 +414,7 @@ def cancel_itinerary(
             cancelled_at=itinerary.cancelled_at
         )
     except ItineraryNotFoundError:
+        logger.warning(f"Cancel failed - itinerary not found: id={itinerary_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=create_error_response(
@@ -383,6 +424,7 @@ def cancel_itinerary(
             )
         )
     except InvalidStatusTransitionError as e:
+        logger.warning(f"Cannot cancel itinerary id={itinerary_id} in status={e.current_status}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=create_error_response(
@@ -416,7 +458,10 @@ def plan_trip(
     Generate travel options from natural language query.
     Results are ephemeral (not saved) - user must call POST /itineraries to save.
     """
+    logger.info(f"Plan trip request: query='{request.query[:50]}...'" if len(request.query) > 50 else f"Plan trip request: query='{request.query}'")
+    
     if llm is None:
+        logger.error("LLM service unavailable - OPENAI_API_KEY not set")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=create_error_response(
@@ -428,13 +473,16 @@ def plan_trip(
     
     try:
         # Create orchestrator and parse intent
+        logger.debug("Creating orchestrator and parsing intent")
         orchestrator = Orchestrator(llm=llm, memory=None)
         
         # Parse the query to get intent
         from main import interpret_nl_with_llm
         intent = interpret_nl_with_llm(request.query, llm)
+        logger.debug(f"Parsed intent: {intent}")
         
         # Run the orchestrator to get results
+        logger.info("Running orchestrator for trip planning")
         results = orchestrator.run_intent(intent)
         
         # Extract options from results
@@ -459,6 +507,8 @@ def plan_trip(
                 else:
                     car_options.append(value)
         
+        logger.info(f"Plan trip completed: {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars")
+        
         return PlanResponse(
             flight_options=flight_options,
             hotel_options=hotel_options,
@@ -468,6 +518,7 @@ def plan_trip(
         )
         
     except Exception as e:
+        logger.error(f"Plan trip failed: {type(e).__name__}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_response(
@@ -494,7 +545,10 @@ def modify_itinerary_nl(
     Modify an itinerary using natural language instructions.
     Uses LLM to interpret the instruction and update relevant components.
     """
+    logger.info(f"Modify itinerary request: id={itinerary_id}, instruction='{request.instruction[:50]}...'" if len(request.instruction) > 50 else f"Modify itinerary request: id={itinerary_id}, instruction='{request.instruction}'")
+    
     if llm is None:
+        logger.error("LLM service unavailable - OPENAI_API_KEY not set")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=create_error_response(
@@ -511,6 +565,7 @@ def modify_itinerary_nl(
     try:
         itinerary = repo.get_by_id_or_raise(itinerary_id)
     except ItineraryNotFoundError:
+        logger.warning(f"Modify failed - itinerary not found: id={itinerary_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=create_error_response(
@@ -521,6 +576,7 @@ def modify_itinerary_nl(
         )
     
     if itinerary.status != "draft":
+        logger.warning(f"Cannot modify itinerary id={itinerary_id} in status={itinerary.status}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=create_error_response(
@@ -532,6 +588,7 @@ def modify_itinerary_nl(
     
     try:
         # Get chat history for context
+        logger.debug(f"Getting chat history for itinerary id={itinerary_id}")
         chat_history = chat_repo.get_history(itinerary_id, limit=10)
         
         # Build context for LLM
@@ -563,7 +620,9 @@ Analyze the instruction and respond with a JSON object containing:
 Respond with ONLY the JSON object."""
 
         # Get LLM response
+        logger.debug("Invoking LLM for modification analysis")
         llm_response = llm.invoke(modification_prompt)
+        logger.debug(f"LLM response received")
         
         # Save chat messages
         chat_repo.add_message(itinerary_id, "user", request.instruction)
@@ -579,6 +638,8 @@ Respond with ONLY the JSON object."""
         # Refresh itinerary
         db.refresh(itinerary)
         
+        logger.info(f"Modification request processed for itinerary id={itinerary_id}")
+        
         return ModifyResponse(
             success=True,
             updated_itinerary=itinerary_to_response(itinerary),
@@ -587,6 +648,7 @@ Respond with ONLY the JSON object."""
         )
         
     except Exception as e:
+        logger.error(f"Modification failed for itinerary id={itinerary_id}: {type(e).__name__}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_response(

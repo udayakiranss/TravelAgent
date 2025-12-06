@@ -1,7 +1,7 @@
 """
 Database connection and session management for SQLite.
 """
-from sqlmodel import SQLModel, create_engine, Session
+from sqlmodel import SQLModel, create_engine, Session  
 from contextlib import contextmanager
 from pathlib import Path
 

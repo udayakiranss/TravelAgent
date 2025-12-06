@@ -21,9 +21,13 @@ from dotenv import load_dotenv
 from api.routes import router as api_router
 from api.dependencies import startup_event, shutdown_event
 from database.connection import create_db_and_tables
+from utils.logger import get_logger, SessionContext
 
 # Load environment variables
 load_dotenv()
+
+# Initialize logger
+logger = get_logger()
 
 
 # =============================================================================
@@ -35,19 +39,20 @@ async def lifespan(app: FastAPI):
     """
     Lifespan context manager for startup and shutdown events.
     """
-    # Startup
-    print("🚀 Starting Travel Booking API...")
+    # Startup - Create new session for the application lifecycle
+    SessionContext.new_session()
+    logger.info("Starting Travel Booking API...")
     startup_event()
-    print("✅ Database initialized")
-    print("✅ API ready at http://localhost:8000")
-    print("📚 Docs available at http://localhost:8000/docs")
+    logger.info("Database initialized")
+    logger.info("API ready at http://localhost:8000")
+    logger.info("Docs available at http://localhost:8000/docs")
     
     yield
     
     # Shutdown
-    print("🛑 Shutting down...")
+    logger.info("Shutting down Travel Booking API...")
     shutdown_event()
-    print("✅ Cleanup complete")
+    logger.info("Cleanup complete")
 
 
 # =============================================================================

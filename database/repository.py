@@ -8,6 +8,10 @@ from sqlmodel import Session, select
 from sqlalchemy import func
 
 from .models import Itinerary, ChatHistory
+from utils.logger import get_logger
+
+# Initialize logger
+logger = get_logger()
 
 
 class VersionConflictError(Exception):
@@ -84,6 +88,7 @@ class ItineraryRepository:
         self.session.commit()
         self.session.refresh(itinerary)
         
+        logger.info(f"Created itinerary: id={itinerary.id}, traveler_id={traveler_id}")
         return itinerary
     
     # =========================================================================
@@ -182,10 +187,12 @@ class ItineraryRepository:
         
         # Check status - can only update drafts
         if itinerary.status != "draft":
+            logger.warning(f"Update rejected: itinerary id={itinerary_id} is in status={itinerary.status}")
             raise InvalidStatusTransitionError(itinerary.status, "draft (update)")
         
         # Check version for optimistic locking
         if itinerary.version != version:
+            logger.warning(f"Version conflict: itinerary id={itinerary_id}, expected={version}, current={itinerary.version}")
             raise VersionConflictError(version, itinerary.version)
         
         # Update fields (... means "not provided", None means "clear")
@@ -207,6 +214,7 @@ class ItineraryRepository:
         self.session.commit()
         self.session.refresh(itinerary)
         
+        logger.info(f"Updated itinerary: id={itinerary_id}, new_version={itinerary.version}, total_cost={itinerary.total_cost}")
         return itinerary
     
     # =========================================================================
@@ -224,6 +232,7 @@ class ItineraryRepository:
         itinerary = self.get_by_id_or_raise(itinerary_id)
         
         if itinerary.status != "draft":
+            logger.warning(f"Confirm rejected: itinerary id={itinerary_id} is in status={itinerary.status}")
             raise InvalidStatusTransitionError(itinerary.status, "confirmed")
         
         itinerary.status = "confirmed"
@@ -234,6 +243,7 @@ class ItineraryRepository:
         self.session.commit()
         self.session.refresh(itinerary)
         
+        logger.info(f"Confirmed itinerary: id={itinerary_id}")
         return itinerary
     
     def cancel(self, itinerary_id: str) -> Itinerary:
@@ -247,6 +257,7 @@ class ItineraryRepository:
         itinerary = self.get_by_id_or_raise(itinerary_id)
         
         if itinerary.status == "cancelled":
+            logger.warning(f"Cancel rejected: itinerary id={itinerary_id} is already cancelled")
             raise InvalidStatusTransitionError(itinerary.status, "cancelled")
         
         itinerary.status = "cancelled"
@@ -258,6 +269,7 @@ class ItineraryRepository:
         self.session.commit()
         self.session.refresh(itinerary)
         
+        logger.info(f"Cancelled itinerary: id={itinerary_id}")
         return itinerary
     
     # =========================================================================
@@ -278,6 +290,7 @@ class ItineraryRepository:
         itinerary = self.get_by_id_or_raise(itinerary_id)
         
         if itinerary.status != "draft":
+            logger.warning(f"Delete rejected: itinerary id={itinerary_id} is in status={itinerary.status}")
             raise InvalidStatusTransitionError(
                 itinerary.status, 
                 "deleted (only drafts can be deleted)"
@@ -286,6 +299,7 @@ class ItineraryRepository:
         self.session.delete(itinerary)
         self.session.commit()
         
+        logger.info(f"Deleted itinerary: id={itinerary_id}")
         return True
 
 
