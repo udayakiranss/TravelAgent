@@ -49,23 +49,22 @@ def interpret_nl_with_llm(text: str, llm) -> dict:
     logger.info(f"Using LLM to parse query: {text[:100]}...")
     import json
     
-    prompt = f"""Parse the following user query about travel booking into a structured intent format.
-
-User Query: "{text}"
-
-Extract the following information:
-- needs: List of services needed (flight, hotel, car, itinerary)
-- from: Origin airport code (3 letters, uppercase)
-- to: Destination airport code (3 letters, uppercase)
-- date: Travel date in YYYY-MM-DD format
-
-Return ONLY a valid JSON object with these fields. Example:
-{{
-  "needs": ["flight", "hotel", "car", "itinerary"],
-  "from": "NYC",
-  "to": "LON",
-  "date": "2025-08-12"
-}}"""
+    prompt = (
+        "Parse the following user query about travel booking into a structured intent format.\n\n"
+        f'User Query: "{text}"\n\n'
+        "Extract the following information:\n"
+        "- needs: List of services needed (flight, hotel, car, itinerary)\n"
+        "- from: Origin airport code (3 letters, uppercase)\n"
+        "- to: Destination airport code (3 letters, uppercase)\n"
+        "- date: Travel date in YYYY-MM-DD format\n\n"
+        "Return ONLY a valid JSON object with these fields. Example:\n"
+        '{\n'
+        '  "needs": ["flight", "hotel", "car", "itinerary"],\n'
+        '  "from": "NYC",\n'
+        '  "to": "LON",\n'
+        '  "date": "2025-08-12"\n'
+        '}'
+    )
 
     try:
         response = llm.invoke_structured(
@@ -87,7 +86,7 @@ Return ONLY a valid JSON object with these fields. Example:
                 # Try to parse raw response
                 try:
                     return json.loads(response["raw_response"])
-                except:
+                except Exception:
                     # Fallback to rule-based
                     return interpret_nl(text)
             else:

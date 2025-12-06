@@ -48,3 +48,4 @@ dmypy.json
 logs/
 *.log
 
+itineraries.db

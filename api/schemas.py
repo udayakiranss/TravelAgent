@@ -1,0 +1,214 @@
+"""
+Pydantic models for API request/response validation.
+Provides type-safe data structures for the Travel Booking API.
+"""
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+from pydantic import BaseModel, Field
+
+
+# =============================================================================
+# Error Response Models
+# =============================================================================
+
+class ErrorResponse(BaseModel):
+    """Standard error response format."""
+    error: str = Field(..., description="Error code (e.g., ITINERARY_NOT_FOUND)")
+    message: str = Field(..., description="Human-readable error description")
+    status_code: int = Field(..., description="HTTP status code")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    details: Optional[Dict[str, Any]] = Field(default=None, description="Additional error details")
+
+
+class VersionConflictResponse(ErrorResponse):
+    """Response for optimistic locking conflicts."""
+    current_version: int = Field(..., description="Current version in database")
+
+
+# =============================================================================
+# Itinerary Request Models
+# =============================================================================
+
+class ItineraryCreateRequest(BaseModel):
+    """Request body for creating a new itinerary."""
+    traveler_id: str = Field(..., min_length=1, description="Traveler identifier")
+    original_query: Optional[str] = Field(default=None, description="Original NL query")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "traveler_id": "user_123",
+                "original_query": "Plan a weekend trip to Paris"
+            }
+        }
+
+
+class ItineraryUpdateRequest(BaseModel):
+    """Request body for updating an itinerary (with optimistic locking)."""
+    version: int = Field(..., ge=1, description="Expected version for optimistic locking")
+    flight_data: Optional[Dict[str, Any]] = Field(default=None, description="Flight booking to set (null to clear)")
+    hotel_data: Optional[Dict[str, Any]] = Field(default=None, description="Hotel booking to set (null to clear)")
+    car_data: Optional[Dict[str, Any]] = Field(default=None, description="Car rental to set (null to clear)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "version": 2,
+                "flight_data": {
+                    "airline": "British Airways",
+                    "flight_number": "BA123",
+                    "price": 380
+                },
+                "hotel_data": None  # This will clear the hotel
+            }
+        }
+
+
+class NaturalLanguageQueryRequest(BaseModel):
+    """Request body for natural language planning."""
+    query: str = Field(..., min_length=5, description="Natural language travel query")
+    traveler_id: str = Field(..., min_length=1, description="Traveler identifier")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "query": "Plan a weekend trip to Paris from London next Friday",
+                "traveler_id": "user_123"
+            }
+        }
+
+
+class NaturalLanguageModifyRequest(BaseModel):
+    """Request body for natural language modification of existing itinerary."""
+    instruction: str = Field(..., min_length=3, description="Modification instruction")
+    traveler_id: str = Field(..., min_length=1, description="Traveler identifier")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "instruction": "Change the flight to next Monday",
+                "traveler_id": "user_123"
+            }
+        }
+
+
+# =============================================================================
+# Itinerary Response Models
+# =============================================================================
+
+class ItineraryResponse(BaseModel):
+    """Response body for a single itinerary."""
+    id: str = Field(..., description="Unique itinerary identifier")
+    traveler_id: str = Field(..., description="Traveler identifier")
+    original_query: Optional[str] = Field(default=None, description="Original NL query")
+    status: str = Field(..., description="Status: draft, confirmed, cancelled")
+    flight_data: Optional[Dict[str, Any]] = Field(default=None, description="Flight booking details")
+    hotel_data: Optional[Dict[str, Any]] = Field(default=None, description="Hotel booking details")
+    car_data: Optional[Dict[str, Any]] = Field(default=None, description="Car rental details")
+    total_cost: float = Field(default=0, description="Total cost of all bookings")
+    version: int = Field(..., description="Version for optimistic locking")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    updated_at: datetime = Field(..., description="Last modification timestamp")
+    cancelled_at: Optional[datetime] = Field(default=None, description="Cancellation timestamp")
+    
+    class Config:
+        from_attributes = True  # Allow ORM model conversion
+
+
+class ItineraryListResponse(BaseModel):
+    """Response body for itinerary list with pagination."""
+    items: List[ItineraryResponse] = Field(..., description="List of itineraries")
+    total: int = Field(..., description="Total number of matching itineraries")
+    page: int = Field(..., description="Current page number")
+    limit: int = Field(..., description="Items per page")
+    has_more: bool = Field(..., description="Whether more pages exist")
+
+
+class ItineraryStatusResponse(BaseModel):
+    """Response for status change operations."""
+    id: str = Field(..., description="Itinerary ID")
+    status: str = Field(..., description="New status")
+    message: str = Field(..., description="Status change message")
+    cancelled_at: Optional[datetime] = Field(default=None, description="Cancellation time if cancelled")
+
+
+class ItineraryDeleteResponse(BaseModel):
+    """Response for delete operation."""
+    success: bool = Field(..., description="Whether deletion was successful")
+    message: str = Field(..., description="Deletion result message")
+
+
+# =============================================================================
+# Agent/LLM Response Models
+# =============================================================================
+
+class FlightOption(BaseModel):
+    """Flight option from agent search."""
+    flight_id: str
+    airline: str
+    flight_number: Optional[str] = None
+    origin: str
+    destination: str
+    departure: Optional[str] = None
+    arrival: Optional[str] = None
+    price: float
+    
+    class Config:
+        extra = "allow"  # Allow additional fields
+
+
+class HotelOption(BaseModel):
+    """Hotel option from agent search."""
+    hotel_id: str
+    name: str
+    location: Optional[str] = None
+    check_in: Optional[str] = None
+    check_out: Optional[str] = None
+    price_per_night: Optional[float] = None
+    total_price: float
+    
+    class Config:
+        extra = "allow"
+
+
+class CarOption(BaseModel):
+    """Car rental option from agent search."""
+    car_id: str
+    company: str
+    car_type: Optional[str] = None
+    model: Optional[str] = None
+    price_per_day: Optional[float] = None
+    total_price: float
+    
+    class Config:
+        extra = "allow"
+
+
+class PlanResponse(BaseModel):
+    """Response from /agent/plan endpoint - ephemeral search results."""
+    flight_options: List[Dict[str, Any]] = Field(default_factory=list)
+    hotel_options: List[Dict[str, Any]] = Field(default_factory=list)
+    car_options: List[Dict[str, Any]] = Field(default_factory=list)
+    summary: Optional[str] = Field(default=None, description="LLM-generated summary")
+    query: str = Field(..., description="Original query")
+
+
+class ModifyResponse(BaseModel):
+    """Response from NL modification endpoint."""
+    success: bool = Field(..., description="Whether modification succeeded")
+    updated_itinerary: Optional[ItineraryResponse] = Field(default=None)
+    message: str = Field(..., description="Modification result message")
+    partial: bool = Field(default=False, description="True if operation timed out with partial results")
+
+
+# =============================================================================
+# Health Check Models
+# =============================================================================
+
+class HealthResponse(BaseModel):
+    """Response from health check endpoint."""
+    status: str = Field(..., description="Overall status: healthy, degraded, unhealthy")
+    database: str = Field(..., description="Database status: connected, error")
+    llm: str = Field(..., description="LLM status: available, unavailable, error")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
