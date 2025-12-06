@@ -2,6 +2,7 @@
 from agents.orchestrator import Orchestrator
 from agents.memory import create_memory
 from agents.llm_provider import create_llm_provider
+from agents.response_formatter import format_travel_results
 from utils.logger import get_logger, SessionContext, log_critical_entry_exit, log_method_entry_exit
 import os
 from dotenv import load_dotenv
@@ -53,21 +54,17 @@ def interpret_nl_with_llm(text: str, llm) -> dict:
 User Query: "{text}"
 
 Extract the following information:
-- needs: List of services needed (flight, hotel, car)
+- needs: List of services needed (flight, hotel, car, itinerary)
 - from: Origin airport code (3 letters, uppercase)
 - to: Destination airport code (3 letters, uppercase)
 - date: Travel date in YYYY-MM-DD format
-- auto_pay: Boolean indicating if payment should be processed automatically
-- budget: Optional budget amount
-- payment_method: Optional payment method (card, visa, etc.)
 
 Return ONLY a valid JSON object with these fields. Example:
 {{
-  "needs": ["flight", "hotel"],
+  "needs": ["flight", "hotel", "car", "itinerary"],
   "from": "NYC",
   "to": "LON",
-  "date": "2025-08-12",
-  "auto_pay": false
+  "date": "2025-08-12"
 }}"""
 
     try:
@@ -79,10 +76,7 @@ Return ONLY a valid JSON object with these fields. Example:
                     "needs": {"type": "array", "items": {"type": "string"}},
                     "from": {"type": "string"},
                     "to": {"type": "string"},
-                    "date": {"type": "string"},
-                    "auto_pay": {"type": "boolean"},
-                    "budget": {"type": "number"},
-                    "payment_method": {"type": "string"}
+                    "date": {"type": "string"}
                 }
             }
         )
@@ -102,10 +96,7 @@ Return ONLY a valid JSON object with these fields. Example:
                     "needs": response.get("needs", []),
                     "from": response.get("from", ""),
                     "to": response.get("to", ""),
-                    "date": response.get("date", ""),
-                    "auto_pay": response.get("auto_pay", False),
-                    "budget": response.get("budget"),
-                    "payment_method": response.get("payment_method")
+                    "date": response.get("date", "")
                 }
                 # Remove None/empty values
                 return {k: v for k, v in intent.items() if v or k == "needs"}
@@ -166,46 +157,45 @@ def main():
     print(f"Available agents: {', '.join(agents)}\n")
     print("=" * 60)
     
-    # Example queries
+    # Example queries - Use specific dates for best results
     examples = [
-        'Find me a flight from NYC to LON on 2025-08-12 and book a hotel'
-        # 'I need a rental car in LON for my trip',
-        # 'Charge my Visa to pay the total'
+        # Complete Dubai trip from Bangalore with specific date
+        'Plan a complete 5-day Dubai trip for me from Bangalore starting on 2026-04-01. I need flight, hotel, car rental, and an itinerary.',
+        # Uncomment below for more examples:
+        # 'Find me a flight from BLR to DXB on 2026-04-05 and book a hotel',
+        # 'I need a rental car in DXB for my trip',
+        # 'Find me a flight from NYC to LON on 2025-08-12 and book a hotel',
     ]
     
     for i, ex in enumerate(examples, 1):
         logger.info(f"Processing example {i}: {ex}")
-        print(f"\n{'='*60}")
-        print(f"Example {i}: {ex}")
-        print('='*60)
+        # print(f"\n{'='*60}")
+        # print(f"Example {i}: {ex}")
+        # print('='*60)
         
         # Parse intent: use LLM if available, otherwise use rule-based parser
         if llm:
             intent = interpret_nl_with_llm(ex, llm)
             logger.debug(f"Parsed intent (LLM): {intent}")
-            print(f'Parsed Intent (LLM): {intent}\n')
+            # print(f'Parsed Intent (LLM): {intent}\n')
         else:
             intent = interpret_nl(ex)
             logger.debug(f"Parsed intent (Rule-based): {intent}")
-            print(f'Parsed Intent (Rule-based): {intent}\n')
+            # print(f'Parsed Intent (Rule-based): {intent}\n')
         
         try:
             logger.info(f"Executing intent: {intent}")
             results = orch.run_intent(intent)
             logger.info(f"Intent execution completed successfully")
             
-            print('\nResults:')
-            for key, value in results.items():
-                logger.debug(f"Result for {key}: {str(value)[:100]}")
-                print(f"  {key}:")
-                if isinstance(value, dict):
-                    for k, v in value.items():
-                        print(f"    {k}: {v}")
-                elif isinstance(value, list):
-                    for item in value:
-                        print(f"    {item}")
-                else:
-                    print(f"    {value}")
+            # Format results as natural language (uses LLM if available, fallback otherwise)
+            # Configure output format via OUTPUT_FORMAT env var: key_value (default), structured, json
+            output_format = os.getenv('OUTPUT_FORMAT', 'key_value')
+            print('\n' + '=' * 60)
+            summary = format_travel_results(results, intent, llm, output_format=output_format)
+            print(summary)
+            print('=' * 60)
+            
         except Exception as e:
             logger.error(f"Error processing example {i}: {e}", exc_info=True)
             print(f"Error: {e}")

@@ -129,15 +129,23 @@ class Orchestrator:
         """Enrich task parameters with context from previous tasks"""
         logger.debug(f"Enriching params with context: {list(context.keys())}")
         enriched = params.copy()
+
+        def _select_booking(value):
+            """Pick a single booking dict if a list was returned by a search."""
+            if isinstance(value, list) and value:
+                return value[0]
+            if isinstance(value, dict):
+                return value
+            return None
         
         # If building itinerary, include previous booking results
         if current_task.get('task') == 'build_itinerary':
             if 'FlightBookingAgent' in context:
-                enriched['flight_booking'] = context['FlightBookingAgent']
+                enriched['flight_booking'] = _select_booking(context['FlightBookingAgent'])
             if 'HotelBookingAgent' in context:
-                enriched['hotel_booking'] = context['HotelBookingAgent']
+                enriched['hotel_booking'] = _select_booking(context['HotelBookingAgent'])
             if 'CarRentalAgent' in context:
-                enriched['car_booking'] = context['CarRentalAgent']
+                enriched['car_booking'] = _select_booking(context['CarRentalAgent'])
         
         # If processing payment, include itinerary total if available
         if current_task.get('task') == 'process_payment':

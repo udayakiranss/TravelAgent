@@ -71,16 +71,6 @@ def _rule_based_plan(intent: dict) -> List[Dict[str, Any]]:
         'params': {}
     })
     
-    if intent.get('auto_pay'):
-        tasks.append({
-            'agent': 'PaymentAgent',
-            'task': 'process_payment',
-            'params': {
-                'amount': intent.get('budget', 0),
-                'method': intent.get('payment_method', 'card')
-            }
-        })
-    
     return tasks
 
 
@@ -92,8 +82,8 @@ def _llm_based_plan(intent: dict, llm: LLMProvider) -> List[Dict[str, Any]]:
     available_agents = [
         "FlightBookingAgent - handles flight search, comparison, and booking",
         "HotelBookingAgent - handles hotel search, comparison, and booking",
+        "CarRentalAgent - handles car search, comparison, and booking",
         "ItineraryAgent - handles itinerary creation, updates, and retrieval",
-        "PaymentAgent - handles payment processing"
     ]
     
     prompt = f"""You are a travel planning assistant. Based on the user's intent, create a plan that selects the appropriate agents and tasks.
@@ -105,14 +95,14 @@ User Intent:
 {json.dumps(intent, indent=2)}
 
 Create a JSON array of tasks. Each task should have:
-- "agent": The agent name (FlightBookingAgent, HotelBookingAgent, ItineraryAgent, or PaymentAgent)
+- "agent": The agent name (FlightBookingAgent, HotelBookingAgent, CarRentalAgent, ItineraryAgent)
 - "task": The specific task for that agent
 - "params": Parameters needed for the task
 
 For FlightBookingAgent, tasks can be: search_flights, compare_flights, book_flight
 For HotelBookingAgent, tasks can be: search_hotels, compare_hotels, book_hotel
+For CarRentalAgent, tasks can be: search_cars, compare_cars, book_car
 For ItineraryAgent, tasks can be: build_itinerary, update_itinerary, get_itinerary
-For PaymentAgent, tasks can be: process_payment
 
 Return ONLY a valid JSON array, no other text. Example format:
 [
@@ -125,6 +115,16 @@ Return ONLY a valid JSON array, no other text. Example format:
     "agent": "HotelBookingAgent",
     "task": "search_hotels",
     "params": {{"city": "LON"}}
+  }},
+  {{
+    "agent": "CarRentalAgent",
+    "task": "search_cars",
+    "params": {{"city": "LON"}}
+  }},
+  {{
+    "agent": "ItineraryAgent",
+    "task": "build_itinerary",
+    "params": {{}}
   }}
 ]"""
 

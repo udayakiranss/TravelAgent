@@ -86,14 +86,19 @@ class LangChainLLMProvider(LLMProvider):
     def invoke(self, prompt: str, **kwargs) -> str:
         """Invoke the LLM with a prompt"""
         logger.debug(f"Invoking LLM with prompt length: {len(prompt)} characters")
+        logger.debug(f"LLM Request (prompt):\n{prompt}")
+        if kwargs:
+            logger.debug(f"LLM Request (kwargs): {kwargs}")
         try:
             response = self.llm.invoke(prompt, **kwargs)
             if hasattr(response, 'content'):
                 result = response.content
                 logger.debug(f"LLM invocation successful, response length: {len(result)} characters")
+                logger.debug(f"LLM Response:\n{result}")
                 return result
             result = str(response)
             logger.debug(f"LLM invocation successful, response length: {len(result)} characters")
+            logger.debug(f"LLM Response:\n{result}")
             return result
         except Exception as e:
             logger.error(f"LLM invocation failed: {e}", exc_info=True)
@@ -107,8 +112,12 @@ class LangChainLLMProvider(LLMProvider):
         # Add format instructions to prompt
         format_instructions = f"\n\nRespond in JSON format matching this schema: {json.dumps(response_format, indent=2)}"
         full_prompt = prompt + format_instructions
+        logger.debug(f"LLM Structured Request (full prompt with format instructions):\n{full_prompt}")
+        if kwargs:
+            logger.debug(f"LLM Structured Request (kwargs): {kwargs}")
         
         response_text = self.invoke(full_prompt, **kwargs)
+        logger.debug(f"LLM Structured Response (raw):\n{response_text}")
         
         # Try to parse JSON from response
         try:
