@@ -5,10 +5,12 @@ All endpoints are prefixed with /api/v1 for versioning.
 import os
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session
+
+from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
 
 from api.schemas import (
     # Request models
@@ -82,6 +84,41 @@ def create_error_response(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "details": details,
     }
+
+
+def select_best_option(
+    options: List[Dict[str, Any]], 
+    criteria: SelectionCriteria
+) -> Optional[Dict[str, Any]]:
+    """
+    Select best option from list based on criteria.
+    
+    Args:
+        options: List of travel options (flights, hotels, or cars)
+        criteria: Selection criteria to apply
+        
+    Returns:
+        The best option based on criteria, or None if no options available
+    """
+    if not options:
+        return None
+    
+    if criteria == SelectionCriteria.FIRST_AVAILABLE:
+        return options[0]
+    
+    elif criteria == SelectionCriteria.CHEAPEST:
+        # Look for 'price' or 'total_price' field
+        def get_price(opt: Dict[str, Any]) -> float:
+            return opt.get("price") or opt.get("total_price") or float("inf")
+        return min(options, key=get_price)
+    
+    elif criteria == SelectionCriteria.BEST_RATED:
+        # Look for 'rating' or 'score' field, fallback to first
+        def get_rating(opt: Dict[str, Any]) -> float:
+            return opt.get("rating") or opt.get("score") or 0
+        return max(options, key=get_rating)
+    
+    return options[0]  # fallback
 
 
 # =============================================================================
@@ -447,7 +484,7 @@ LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "60"))
     "/agent/plan",
     response_model=PlanResponse,
     summary="Plan trip",
-    description="Generate travel options from natural language query (ephemeral, not saved)"
+    description="Generate travel options, auto-select best option, and create draft itinerary"
 )
 def plan_trip(
     request: NaturalLanguageQueryRequest,
@@ -456,17 +493,22 @@ def plan_trip(
 ):
     """
     Generate travel options from natural language query.
-    Results are ephemeral (not saved) - user must call POST /itineraries to save.
+    Creates a draft itinerary with auto-selected options based on criteria.
+    Returns itinerary_id for subsequent modifications or confirmation.
     """
     logger.info(f"Plan trip request: query='{request.query[:50]}...'" if len(request.query) > 50 else f"Plan trip request: query='{request.query}'")
+    logger.info(f"Traveler: {request.traveler_id}, Criteria: {request.selection_criteria}, Include summary: {request.include_summary}")
     
     if llm is None:
-        logger.error("LLM service unavailable - OPENAI_API_KEY not set")
+        from api.dependencies import get_expected_api_key_name, get_llm_provider_name
+        api_key_name = get_expected_api_key_name()
+        provider = get_llm_provider_name()
+        logger.error(f"LLM service unavailable - {api_key_name} not set for provider '{provider}'")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=create_error_response(
                 "LLM_UNAVAILABLE",
-                "LLM service is not available. Set OPENAI_API_KEY environment variable.",
+                f"LLM service is not available. Set {api_key_name} environment variable.",
                 503
             )
         )
@@ -507,13 +549,64 @@ def plan_trip(
                 else:
                     car_options.append(value)
         
-        logger.info(f"Plan trip completed: {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars")
+        logger.info(f"Found options: {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars")
+        
+        # Determine selection criteria (use request value or fall back to default)
+        criteria = request.selection_criteria or DEFAULT_SELECTION_CRITERIA
+        logger.debug(f"Using selection criteria: {criteria}")
+        
+        # Auto-select best options based on criteria
+        selected_flight = select_best_option(flight_options, criteria)
+        selected_hotel = select_best_option(hotel_options, criteria)
+        selected_car = select_best_option(car_options, criteria)
+        
+        logger.info(f"Auto-selected: flight={selected_flight is not None}, hotel={selected_hotel is not None}, car={selected_car is not None}")
+        
+        # Create draft itinerary with selected options
+        repo = ItineraryRepository(db)
+        itinerary = repo.create(
+            traveler_id=request.traveler_id,
+            original_query=request.query,
+            flight_data=selected_flight,
+            hotel_data=selected_hotel,
+            car_data=selected_car,
+        )
+        
+        logger.info(f"Created draft itinerary: id={itinerary.id}")
+        
+        # Generate summary using ResponseFormatter if requested
+        summary = None
+        if request.include_summary:
+            try:
+                from agents.response_formatter import ResponseFormatter
+                formatter = ResponseFormatter(llm=llm)
+                summary = formatter.format_results(
+                    results={
+                        "flight": selected_flight,
+                        "hotel": selected_hotel,
+                        "car": selected_car,
+                    },
+                    intent=intent
+                )
+                logger.debug("Generated summary via ResponseFormatter")
+            except Exception as e:
+                logger.warning(f"Failed to generate summary: {e}")
+                summary = f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars"
+        else:
+            summary = f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars"
+        
+        logger.info(f"Plan trip completed: itinerary_id={itinerary.id}")
         
         return PlanResponse(
+            itinerary_id=itinerary.id,
             flight_options=flight_options,
             hotel_options=hotel_options,
             car_options=car_options,
-            summary=f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars",
+            selected_flight=selected_flight,
+            selected_hotel=selected_hotel,
+            selected_car=selected_car,
+            selection_criteria_used=criteria.value,
+            summary=summary,
             query=request.query
         )
         
@@ -548,12 +641,15 @@ def modify_itinerary_nl(
     logger.info(f"Modify itinerary request: id={itinerary_id}, instruction='{request.instruction[:50]}...'" if len(request.instruction) > 50 else f"Modify itinerary request: id={itinerary_id}, instruction='{request.instruction}'")
     
     if llm is None:
-        logger.error("LLM service unavailable - OPENAI_API_KEY not set")
+        from api.dependencies import get_expected_api_key_name, get_llm_provider_name
+        api_key_name = get_expected_api_key_name()
+        provider = get_llm_provider_name()
+        logger.error(f"LLM service unavailable - {api_key_name} not set for provider '{provider}'")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=create_error_response(
                 "LLM_UNAVAILABLE",
-                "LLM service is not available. Set OPENAI_API_KEY environment variable.",
+                f"LLM service is not available. Set {api_key_name} environment variable.",
                 503
             )
         )

@@ -36,23 +36,68 @@ def get_db() -> Generator[Session, None, None]:
 # LLM Provider Dependencies
 # =============================================================================
 
+# Mapping of provider to expected API key environment variable name
+PROVIDER_API_KEY_NAMES = {
+    "openai": "OPENAI_API_KEY",
+    "google_genai": "GOOGLE_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistralai": "MISTRAL_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "together": "TOGETHER_API_KEY",
+}
+
+# Default models per provider
+PROVIDER_DEFAULT_MODELS = {
+    "openai": "gpt-4o",
+    "google_genai": "gemini-2.0-flash",
+    "anthropic": "claude-3-5-sonnet-latest",
+    "groq": "llama-3.1-70b-versatile",
+    "mistralai": "mistral-large-latest",
+}
+
+
+def get_llm_provider_name() -> str:
+    """Get the configured LLM provider name."""
+    return os.getenv('LLM_PROVIDER', 'openai')
+
+
+def get_expected_api_key_name() -> str:
+    """Get the expected API key environment variable name for current provider."""
+    provider = get_llm_provider_name()
+    return PROVIDER_API_KEY_NAMES.get(provider, f"{provider.upper()}_API_KEY")
+
+
+def get_default_model() -> str:
+    """Get the default model for the current provider."""
+    provider = get_llm_provider_name()
+    return PROVIDER_DEFAULT_MODELS.get(provider, "gpt-4o")
+
+
 @lru_cache()
 def get_llm_provider() -> Optional[LLMProvider]:
     """
     Get cached LLM provider instance.
-    Returns None if OPENAI_API_KEY is not set.
+    Lets LangChain handle API key detection automatically.
+    Returns None if initialization fails (typically due to missing API key).
     """
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        return None
+    provider = get_llm_provider_name()
+    model = os.getenv('LLM_MODEL', get_default_model())
     
     try:
-        return create_llm_provider(
-            model_name=os.getenv('LLM_MODEL', 'gpt-4o'),
-            model_provider=os.getenv('LLM_PROVIDER', 'openai'),
-            temperature=0
+        llm = create_llm_provider(
+            model_name=model,
+            model_provider=provider,
+            temperature=float(os.getenv('LLM_TEMPERATURE', '0'))
         )
-    except Exception:
+        return llm
+    except Exception as e:
+        # Log with provider-specific API key name for clarity
+        api_key_name = get_expected_api_key_name()
+        from utils.logger import get_logger
+        logger = get_logger()
+        logger.warning(f"LLM initialization failed for {provider}/{model}: {e}. "
+                      f"Ensure {api_key_name} is set.")
         return None
 
 

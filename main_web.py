@@ -39,7 +39,10 @@ async def lifespan(app: FastAPI):
     """
     Lifespan context manager for startup and shutdown events.
     """
-    # Startup - Create new session for the application lifecycle
+    # Startup - Setup logger first (reads from environment variables)
+    logger.setup()
+    
+    # Create new session for the application lifecycle
     SessionContext.new_session()
     logger.info("Starting Travel Booking API...")
     startup_event()
