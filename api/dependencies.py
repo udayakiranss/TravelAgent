@@ -1,16 +1,20 @@
 """
 FastAPI dependencies for dependency injection.
-Provides shared resources like database sessions, LLM provider, and orchestrator.
+Provides shared resources like database sessions, LLM provider, context, and orchestrator.
 """
 import os
 from typing import Generator, Optional
 from functools import lru_cache
+from uuid import uuid4
 
+from fastapi import Request, Depends
 from sqlmodel import Session
 
 from database.connection import engine, create_db_and_tables
 from agents.orchestrator import Orchestrator
 from agents.llm_provider import create_llm_provider, LLMProvider
+from api.context import TravelContext
+from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
 
 
 # =============================================================================
@@ -107,19 +111,65 @@ def get_llm() -> Optional[LLMProvider]:
 
 
 # =============================================================================
+# Context Dependencies
+# =============================================================================
+
+def get_context(
+    request: Request,
+    db: Session = Depends(get_db),
+    llm: Optional[LLMProvider] = Depends(get_llm),
+) -> TravelContext:
+    """
+    Create a TravelContext for the current request.
+    
+    Request-scoped fields are initialized here.
+    Conversation-scoped fields (itinerary, chat_history) are loaded by routes as needed.
+    
+    Note: Request ID is set by RequestIDMiddleware (main_web.py), not here.
+    
+    Args:
+        request: FastAPI Request object
+        db: Database session
+        llm: LLM provider (may be None)
+    
+    Returns:
+        Initialized TravelContext
+    """
+    # Get request ID from header (already set by middleware, but also stored in context)
+    request_id = request.headers.get("X-Request-ID", str(uuid4()))
+    
+    return TravelContext(
+        session=db,
+        llm=llm,
+        request_id=request_id,
+        traveler_id="",  # Set by route from request body
+        criteria=DEFAULT_SELECTION_CRITERIA,  # May be overridden by route
+    )
+
+
+# =============================================================================
 # Orchestrator Dependencies
 # =============================================================================
 
+# Cached orchestrator instance (shared across requests for agent reuse)
+_orchestrator_instance: Optional[Orchestrator] = None
+
+
 def get_orchestrator(
-    db: Session,
-    llm: Optional[LLMProvider] = None
+    llm: Optional[LLMProvider] = Depends(get_llm),
 ) -> Orchestrator:
     """
-    Create an Orchestrator instance with database session and optional LLM.
+    Get or create an Orchestrator instance.
     
-    Note: Orchestrator is created per-request to ensure fresh db session.
+    The Orchestrator is cached because agents are stateless.
+    Database operations use the session from TravelContext.
     """
-    return Orchestrator(llm=llm, memory=None)
+    global _orchestrator_instance
+    
+    if _orchestrator_instance is None:
+        _orchestrator_instance = Orchestrator(llm=llm, memory=None)
+    
+    return _orchestrator_instance
 
 
 # =============================================================================
@@ -128,15 +178,26 @@ def get_orchestrator(
 
 def startup_event():
     """Run on application startup."""
+    global _orchestrator_instance
+    
     # Create database tables
     create_db_and_tables()
     
     # Pre-warm LLM provider cache
-    get_llm_provider()
+    llm = get_llm_provider()
+    
+    # Pre-initialize orchestrator with agents (P2: avoid per-request init)
+    if _orchestrator_instance is None:
+        _orchestrator_instance = Orchestrator(llm=llm, memory=None)
 
 
 def shutdown_event():
     """Run on application shutdown."""
+    global _orchestrator_instance
+    
     # Clear LLM provider cache
     get_llm_provider.cache_clear()
+    
+    # Clear orchestrator instance
+    _orchestrator_instance = None
 

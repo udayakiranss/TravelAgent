@@ -13,6 +13,7 @@ load_dotenv()
 # Initialize logger
 logger = get_logger()
 
+
 @log_method_entry_exit(level="DEBUG")
 def interpret_nl(text: str):
     """Simple rule-based NL parser for demo (used only when LLM is not available)"""
@@ -43,78 +44,15 @@ def interpret_nl(text: str):
     return intent
 
 
-@log_method_entry_exit(level="INFO")
-def interpret_nl_with_llm(text: str, llm) -> dict:
-    """Use LLM to parse natural language into structured intent"""
-    logger.info(f"Using LLM to parse query: {text[:100]}...")
-    import json
-    
-    prompt = (
-        "Parse the following user query about travel booking into a structured intent format.\n\n"
-        f'User Query: "{text}"\n\n'
-        "Extract the following information:\n"
-        "- needs: List of services needed (flight, hotel, car, itinerary)\n"
-        "- from: Origin airport code (3 letters, uppercase)\n"
-        "- to: Destination airport code (3 letters, uppercase)\n"
-        "- date: Travel date in YYYY-MM-DD format\n\n"
-        "Return ONLY a valid JSON object with these fields. Example:\n"
-        '{\n'
-        '  "needs": ["flight", "hotel", "car", "itinerary"],\n'
-        '  "from": "NYC",\n'
-        '  "to": "LON",\n'
-        '  "date": "2025-08-12"\n'
-        '}'
-    )
-
-    try:
-        response = llm.invoke_structured(
-            prompt,
-            response_format={
-                "type": "object",
-                "properties": {
-                    "needs": {"type": "array", "items": {"type": "string"}},
-                    "from": {"type": "string"},
-                    "to": {"type": "string"},
-                    "date": {"type": "string"}
-                }
-            }
-        )
-        
-        # Handle response format
-        if isinstance(response, dict):
-            if "raw_response" in response:
-                # Try to parse raw response
-                try:
-                    return json.loads(response["raw_response"])
-                except Exception:
-                    # Fallback to rule-based
-                    return interpret_nl(text)
-            else:
-                # Valid structured response
-                intent = {
-                    "needs": response.get("needs", []),
-                    "from": response.get("from", ""),
-                    "to": response.get("to", ""),
-                    "date": response.get("date", "")
-                }
-                # Remove None/empty values
-                return {k: v for k, v in intent.items() if v or k == "needs"}
-        else:
-            return interpret_nl(text)  # Fallback
-    
-    except Exception as e:
-        print(f"⚠️  LLM parsing failed: {e}, falling back to rule-based parser")
-        return interpret_nl(text)
-
 @log_critical_entry_exit
 def main():
     """Main entry point for the travel booking system"""
     # Setup logger (reads from environment variables: LOG_LEVEL, LOG_OUTPUT, LOG_FILE, LOG_DIR)
     logger.setup()
     
-    # Create new session
+    # Create new session for CLI demo (not per-request like web API)
     session_id = SessionContext.new_session()
-    logger.info(f"Starting new session: {session_id}")
+    logger.info(f"Starting CLI demo session: {session_id[:8]}")
     
     print("=" * 60)
     print("Travel Booking Agent System with LLM Integration")
@@ -168,19 +106,15 @@ def main():
     
     for i, ex in enumerate(examples, 1):
         logger.info(f"Processing example {i}: {ex}")
-        # print(f"\n{'='*60}")
-        # print(f"Example {i}: {ex}")
-        # print('='*60)
         
-        # Parse intent: use LLM if available, otherwise use rule-based parser
+        # Parse intent: use LLM if available via orchestrator, otherwise use rule-based parser
         if llm:
-            intent = interpret_nl_with_llm(ex, llm)
+            # Use orchestrator's interpret method (DD-1: NL interpretation in Orchestrator)
+            intent = orch._interpret_query(ex, llm)
             logger.debug(f"Parsed intent (LLM): {intent}")
-            # print(f'Parsed Intent (LLM): {intent}\n')
         else:
             intent = interpret_nl(ex)
             logger.debug(f"Parsed intent (Rule-based): {intent}")
-            # print(f'Parsed Intent (Rule-based): {intent}\n')
         
         try:
             logger.info(f"Executing intent: {intent}")

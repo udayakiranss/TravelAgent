@@ -2,13 +2,12 @@
 # LLM-based planner that intelligently selects agents to handle user queries
 from typing import Dict, Any, List, Optional
 from agents.llm_provider import LLMProvider
-from utils.logger import get_logger, log_critical_entry_exit, log_method_entry_exit
+from utils.logger import get_logger
 import json
 
 logger = get_logger()
 
 
-@log_critical_entry_exit
 def plan_trip(intent: dict, llm: Optional[LLMProvider] = None) -> List[Dict[str, Any]]:
     """
     Plan a trip using LLM to intelligently select agents and tasks
@@ -20,22 +19,14 @@ def plan_trip(intent: dict, llm: Optional[LLMProvider] = None) -> List[Dict[str,
     Returns:
         List of tasks with agent assignments
     """
-    logger.info(f"Planning trip with intent: {intent}")
-    
     if llm is None:
-        logger.debug("No LLM provided, using rule-based planning")
-        # Fallback to rule-based planning if no LLM provided
         return _rule_based_plan(intent)
     
-    logger.debug("Using LLM-based planning")
-    # Use LLM for intelligent agent selection
     return _llm_based_plan(intent, llm)
 
 
-@log_method_entry_exit(level="DEBUG")
 def _rule_based_plan(intent: dict) -> List[Dict[str, Any]]:
     """Fallback rule-based planning"""
-    logger.debug("Executing rule-based planning")
     tasks = []
     needs = intent.get('needs', [])
     
@@ -71,14 +62,12 @@ def _rule_based_plan(intent: dict) -> List[Dict[str, Any]]:
         'params': {}
     })
     
+    logger.debug(f"Rule-based plan: {len(tasks)} tasks")
     return tasks
 
 
-@log_method_entry_exit(level="INFO")
 def _llm_based_plan(intent: dict, llm: LLMProvider) -> List[Dict[str, Any]]:
     """LLM-based intelligent planning"""
-    logger.info("Executing LLM-based planning")
-    
     available_agents = [
         "FlightBookingAgent - handles flight search, comparison, and booking",
         "HotelBookingAgent - handles hotel search, comparison, and booking",
@@ -129,7 +118,6 @@ Return ONLY a valid JSON array, no other text. Example format:
 ]"""
 
     try:
-        logger.debug("Invoking LLM for planning")
         response = llm.invoke_structured(
             prompt,
             response_format={
@@ -148,15 +136,14 @@ Return ONLY a valid JSON array, no other text. Example format:
         
         # Handle response format
         if isinstance(response, dict) and "raw_response" in response:
-            # Try to parse raw response
             try:
                 tasks = json.loads(response["raw_response"])
             except:
-                return _rule_based_plan(intent)  # Fallback
+                return _rule_based_plan(intent)
         elif isinstance(response, list):
             tasks = response
         else:
-            return _rule_based_plan(intent)  # Fallback
+            return _rule_based_plan(intent)
         
         # Validate and return tasks
         validated_tasks = []
@@ -169,13 +156,12 @@ Return ONLY a valid JSON array, no other text. Example format:
                 })
         
         if validated_tasks:
-            logger.info(f"LLM planning generated {len(validated_tasks)} tasks")
+            logger.debug(f"LLM-based plan: {len(validated_tasks)} tasks")
             return validated_tasks
         else:
             logger.warning("LLM planning returned no valid tasks, falling back to rule-based")
             return _rule_based_plan(intent)
     
     except Exception as e:
-        logger.error(f"LLM planning failed: {e}, falling back to rule-based planning", exc_info=True)
+        logger.warning(f"LLM planning failed: {e}, using rule-based")
         return _rule_based_plan(intent)
-

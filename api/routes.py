@@ -1,17 +1,19 @@
 """
 API routes for the Travel Booking Web Application.
 All endpoints are prefixed with /api/v1 for versioning.
+
+Routes are thin HTTP controllers that delegate to the Orchestrator.
+Business logic lives in Orchestrator and Agents (per DD-1, DD-2).
 """
 import os
-import asyncio
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session
 
 from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
-
+from api.context import TravelContext
 from api.schemas import (
     # Request models
     ItineraryCreateRequest,
@@ -26,20 +28,20 @@ from api.schemas import (
     PlanResponse,
     ModifyResponse,
     HealthResponse,
-    ErrorResponse,
 )
-from api.dependencies import get_db, get_llm, get_orchestrator
+from api.dependencies import get_db, get_llm, get_context, get_orchestrator
 from database.repository import (
-    ItineraryRepository,
-    ChatHistoryRepository,
+    TravelItineraryRepository,
+    ChatMessageRepository,
     ItineraryNotFoundError,
     VersionConflictError,
     InvalidStatusTransitionError,
+    LLMUnavailableError,
 )
 from database.models import Itinerary
 from agents.llm_provider import LLMProvider
 from agents.orchestrator import Orchestrator
-from utils.logger import get_logger, log_method_entry_exit
+from utils.logger import get_logger
 
 # Initialize logger
 logger = get_logger()
@@ -59,9 +61,9 @@ def itinerary_to_response(itinerary: Itinerary) -> ItineraryResponse:
         traveler_id=itinerary.traveler_id,
         original_query=itinerary.original_query,
         status=itinerary.status,
-        flight_data=itinerary.flight_data,
-        hotel_data=itinerary.hotel_data,
-        car_data=itinerary.car_data,
+        flight_reservation=itinerary.flight_reservation,
+        hotel_reservation=itinerary.hotel_reservation,
+        car_reservation=itinerary.car_reservation,
         total_cost=itinerary.total_cost,
         version=itinerary.version,
         created_at=itinerary.created_at,
@@ -86,39 +88,50 @@ def create_error_response(
     }
 
 
-def select_best_option(
-    options: List[Dict[str, Any]], 
-    criteria: SelectionCriteria
-) -> Optional[Dict[str, Any]]:
-    """
-    Select best option from list based on criteria.
-    
-    Args:
-        options: List of travel options (flights, hotels, or cars)
-        criteria: Selection criteria to apply
-        
-    Returns:
-        The best option based on criteria, or None if no options available
-    """
-    if not options:
-        return None
-    
-    if criteria == SelectionCriteria.FIRST_AVAILABLE:
-        return options[0]
-    
-    elif criteria == SelectionCriteria.CHEAPEST:
-        # Look for 'price' or 'total_price' field
-        def get_price(opt: Dict[str, Any]) -> float:
-            return opt.get("price") or opt.get("total_price") or float("inf")
-        return min(options, key=get_price)
-    
-    elif criteria == SelectionCriteria.BEST_RATED:
-        # Look for 'rating' or 'score' field, fallback to first
-        def get_rating(opt: Dict[str, Any]) -> float:
-            return opt.get("rating") or opt.get("score") or 0
-        return max(options, key=get_rating)
-    
-    return options[0]  # fallback
+def handle_domain_exception(e: Exception):
+    """Convert domain exceptions to HTTP exceptions (DD-7)."""
+    if isinstance(e, ItineraryNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=create_error_response(
+                "ITINERARY_NOT_FOUND",
+                f"Itinerary with id '{e.itinerary_id}' does not exist",
+                404
+            )
+        )
+    elif isinstance(e, VersionConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=create_error_response(
+                "VERSION_CONFLICT",
+                f"Itinerary was modified. Expected version {e.expected_version}, found {e.current_version}",
+                409,
+                {"current_version": e.current_version}
+            )
+        )
+    elif isinstance(e, InvalidStatusTransitionError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=create_error_response(
+                "INVALID_STATUS_TRANSITION",
+                f"Cannot transition from '{e.current_status}' to '{e.target_status}'",
+                400
+            )
+        )
+    elif isinstance(e, LLMUnavailableError):
+        from api.dependencies import get_expected_api_key_name, get_llm_provider_name
+        api_key_name = get_expected_api_key_name()
+        provider = get_llm_provider_name()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_response(
+                "LLM_UNAVAILABLE",
+                f"LLM service is not available. Set {api_key_name} environment variable.",
+                503
+            )
+        )
+    else:
+        raise
 
 
 # =============================================================================
@@ -184,7 +197,7 @@ def create_itinerary(
     """Create a new draft itinerary."""
     logger.info(f"Creating itinerary for traveler_id={request.traveler_id}")
     
-    repo = ItineraryRepository(db)
+    repo = TravelItineraryRepository(db)
     
     itinerary = repo.create(
         traveler_id=request.traveler_id,
@@ -211,7 +224,7 @@ def list_itineraries(
     """List itineraries with pagination."""
     logger.debug(f"Listing itineraries: status={status}, traveler_id={traveler_id}, page={page}, limit={limit}")
     
-    repo = ItineraryRepository(db)
+    repo = TravelItineraryRepository(db)
     
     itineraries, total = repo.list_all(
         status=status,
@@ -244,22 +257,14 @@ def get_itinerary(
     """Get itinerary by ID."""
     logger.debug(f"Getting itinerary id={itinerary_id}")
     
-    repo = ItineraryRepository(db)
+    repo = TravelItineraryRepository(db)
     
     try:
         itinerary = repo.get_by_id_or_raise(itinerary_id)
         logger.debug(f"Found itinerary id={itinerary_id}, status={itinerary.status}")
         return itinerary_to_response(itinerary)
-    except ItineraryNotFoundError:
-        logger.warning(f"Itinerary not found: id={itinerary_id}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=create_error_response(
-                "ITINERARY_NOT_FOUND",
-                f"Itinerary with id '{itinerary_id}' does not exist",
-                404
-            )
-        )
+    except ItineraryNotFoundError as e:
+        handle_domain_exception(e)
 
 
 @router.put(
@@ -276,7 +281,7 @@ def update_itinerary(
     """Update itinerary with optimistic locking."""
     logger.info(f"Updating itinerary id={itinerary_id}, version={request.version}")
     
-    repo = ItineraryRepository(db)
+    repo = TravelItineraryRepository(db)
     
     try:
         # Build update kwargs - use ... as sentinel for "not provided"
@@ -286,12 +291,12 @@ def update_itinerary(
         }
         
         # Only include fields that were explicitly provided in request
-        if request.flight_data is not None or "flight_data" in request.model_fields_set:
-            kwargs["flight_data"] = request.flight_data
-        if request.hotel_data is not None or "hotel_data" in request.model_fields_set:
-            kwargs["hotel_data"] = request.hotel_data
-        if request.car_data is not None or "car_data" in request.model_fields_set:
-            kwargs["car_data"] = request.car_data
+        if request.flight_reservation is not None or "flight_reservation" in request.model_fields_set:
+            kwargs["flight_reservation"] = request.flight_reservation
+        if request.hotel_reservation is not None or "hotel_reservation" in request.model_fields_set:
+            kwargs["hotel_reservation"] = request.hotel_reservation
+        if request.car_reservation is not None or "car_reservation" in request.model_fields_set:
+            kwargs["car_reservation"] = request.car_reservation
         
         logger.debug(f"Update fields: {list(kwargs.keys())}")
         
@@ -299,37 +304,8 @@ def update_itinerary(
         logger.info(f"Updated itinerary id={itinerary_id}, new_version={itinerary.version}")
         return itinerary_to_response(itinerary)
         
-    except ItineraryNotFoundError:
-        logger.warning(f"Update failed - itinerary not found: id={itinerary_id}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=create_error_response(
-                "ITINERARY_NOT_FOUND",
-                f"Itinerary with id '{itinerary_id}' does not exist",
-                404
-            )
-        )
-    except VersionConflictError as e:
-        logger.warning(f"Version conflict on itinerary id={itinerary_id}: expected={e.expected_version}, current={e.current_version}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=create_error_response(
-                "VERSION_CONFLICT",
-                f"Itinerary was modified. Expected version {e.expected_version}, found {e.current_version}",
-                409,
-                {"current_version": e.current_version}
-            )
-        )
-    except InvalidStatusTransitionError as e:
-        logger.warning(f"Cannot modify itinerary id={itinerary_id} in status={e.current_status}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=create_error_response(
-                "CANNOT_MODIFY_CONFIRMED",
-                f"Cannot modify itinerary in '{e.current_status}' status",
-                400
-            )
-        )
+    except (ItineraryNotFoundError, VersionConflictError, InvalidStatusTransitionError) as e:
+        handle_domain_exception(e)
 
 
 @router.delete(
@@ -346,7 +322,7 @@ def delete_itinerary(
     """Delete a draft itinerary."""
     logger.info(f"Deleting itinerary id={itinerary_id}")
     
-    repo = ItineraryRepository(db)
+    repo = TravelItineraryRepository(db)
     
     try:
         repo.delete(itinerary_id)
@@ -355,26 +331,8 @@ def delete_itinerary(
             success=True,
             message=f"Itinerary {itinerary_id} deleted successfully"
         )
-    except ItineraryNotFoundError:
-        logger.warning(f"Delete failed - itinerary not found: id={itinerary_id}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=create_error_response(
-                "ITINERARY_NOT_FOUND",
-                f"Itinerary with id '{itinerary_id}' does not exist",
-                404
-            )
-        )
-    except InvalidStatusTransitionError as e:
-        logger.warning(f"Cannot delete itinerary id={itinerary_id} in status={e.current_status}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=create_error_response(
-                "CANNOT_DELETE_CONFIRMED",
-                f"Cannot delete itinerary in '{e.current_status}' status. Only drafts can be deleted.",
-                400
-            )
-        )
+    except (ItineraryNotFoundError, InvalidStatusTransitionError) as e:
+        handle_domain_exception(e)
 
 
 # =============================================================================
@@ -389,41 +347,25 @@ def delete_itinerary(
 )
 def confirm_itinerary(
     itinerary_id: str,
-    db: Session = Depends(get_db),
+    ctx: TravelContext = Depends(get_context),
+    orchestrator: Orchestrator = Depends(get_orchestrator),
 ):
     """Confirm a draft itinerary."""
     logger.info(f"Confirming itinerary id={itinerary_id}")
     
-    repo = ItineraryRepository(db)
+    # Set up context
+    ctx.itinerary_id = itinerary_id
     
     try:
-        itinerary = repo.confirm(itinerary_id)
+        itinerary = orchestrator.confirm_itinerary(ctx)
         logger.info(f"Confirmed itinerary id={itinerary_id}")
         return ItineraryStatusResponse(
             id=itinerary.id,
             status=itinerary.status,
             message="Itinerary confirmed successfully"
         )
-    except ItineraryNotFoundError:
-        logger.warning(f"Confirm failed - itinerary not found: id={itinerary_id}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=create_error_response(
-                "ITINERARY_NOT_FOUND",
-                f"Itinerary with id '{itinerary_id}' does not exist",
-                404
-            )
-        )
-    except InvalidStatusTransitionError as e:
-        logger.warning(f"Cannot confirm itinerary id={itinerary_id} in status={e.current_status}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=create_error_response(
-                "INVALID_STATUS_TRANSITION",
-                f"Cannot confirm itinerary in '{e.current_status}' status. Only drafts can be confirmed.",
-                400
-            )
-        )
+    except (ItineraryNotFoundError, InvalidStatusTransitionError) as e:
+        handle_domain_exception(e)
 
 
 @router.post(
@@ -434,15 +376,17 @@ def confirm_itinerary(
 )
 def cancel_itinerary(
     itinerary_id: str,
-    db: Session = Depends(get_db),
+    ctx: TravelContext = Depends(get_context),
+    orchestrator: Orchestrator = Depends(get_orchestrator),
 ):
     """Cancel an itinerary."""
     logger.info(f"Cancelling itinerary id={itinerary_id}")
     
-    repo = ItineraryRepository(db)
+    # Set up context
+    ctx.itinerary_id = itinerary_id
     
     try:
-        itinerary = repo.cancel(itinerary_id)
+        itinerary = orchestrator.cancel_itinerary(ctx)
         logger.info(f"Cancelled itinerary id={itinerary_id}")
         return ItineraryStatusResponse(
             id=itinerary.id,
@@ -450,35 +394,13 @@ def cancel_itinerary(
             message="Itinerary cancelled successfully",
             cancelled_at=itinerary.cancelled_at
         )
-    except ItineraryNotFoundError:
-        logger.warning(f"Cancel failed - itinerary not found: id={itinerary_id}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=create_error_response(
-                "ITINERARY_NOT_FOUND",
-                f"Itinerary with id '{itinerary_id}' does not exist",
-                404
-            )
-        )
-    except InvalidStatusTransitionError as e:
-        logger.warning(f"Cannot cancel itinerary id={itinerary_id} in status={e.current_status}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=create_error_response(
-                "INVALID_STATUS_TRANSITION",
-                f"Cannot cancel itinerary in '{e.current_status}' status. Already cancelled.",
-                400
-            )
-        )
+    except (ItineraryNotFoundError, InvalidStatusTransitionError) as e:
+        handle_domain_exception(e)
 
 
 # =============================================================================
-# LLM Operations
+# LLM Operations (Thin Routes per DD-1, DD-2)
 # =============================================================================
-
-# Timeout for LLM operations (in seconds)
-LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "60"))
-
 
 @router.post(
     "/agent/plan",
@@ -488,128 +410,48 @@ LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "60"))
 )
 def plan_trip(
     request: NaturalLanguageQueryRequest,
-    db: Session = Depends(get_db),
-    llm: Optional[LLMProvider] = Depends(get_llm),
+    ctx: TravelContext = Depends(get_context),
+    orchestrator: Orchestrator = Depends(get_orchestrator),
 ):
     """
-    Generate travel options from natural language query.
-    Creates a draft itinerary with auto-selected options based on criteria.
-    Returns itinerary_id for subsequent modifications or confirmation.
+    Plan a trip from natural language query.
+    
+    Delegates to Orchestrator.plan_trip() which:
+    1. Parses the NL query to intent (DD-1)
+    2. Runs agents with context-aware selection (DD-3)
+    3. Creates draft itinerary
+    
+    Returns itinerary_id, all options, selected reservations, and summary.
     """
     logger.info(f"Plan trip request: query='{request.query[:50]}...'" if len(request.query) > 50 else f"Plan trip request: query='{request.query}'")
-    logger.info(f"Traveler: {request.traveler_id}, Criteria: {request.selection_criteria}, Include summary: {request.include_summary}")
     
-    if llm is None:
-        from api.dependencies import get_expected_api_key_name, get_llm_provider_name
-        api_key_name = get_expected_api_key_name()
-        provider = get_llm_provider_name()
-        logger.error(f"LLM service unavailable - {api_key_name} not set for provider '{provider}'")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=create_error_response(
-                "LLM_UNAVAILABLE",
-                f"LLM service is not available. Set {api_key_name} environment variable.",
-                503
-            )
-        )
+    # Populate context from request (DD-2)
+    ctx.traveler_id = request.traveler_id
+    ctx.criteria = request.selection_criteria or DEFAULT_SELECTION_CRITERIA
+    
+    logger.info(f"Traveler: {ctx.traveler_id}, Criteria: {ctx.criteria.value}")
     
     try:
-        # Create orchestrator and parse intent
-        logger.debug("Creating orchestrator and parsing intent")
-        orchestrator = Orchestrator(llm=llm, memory=None)
+        # Delegate to orchestrator (thin route)
+        result = orchestrator.plan_trip(request.query, ctx, include_summary=request.include_summary)
         
-        # Parse the query to get intent
-        from main import interpret_nl_with_llm
-        intent = interpret_nl_with_llm(request.query, llm)
-        logger.debug(f"Parsed intent: {intent}")
-        
-        # Run the orchestrator to get results
-        logger.info("Running orchestrator for trip planning")
-        results = orchestrator.run_intent(intent)
-        
-        # Extract options from results
-        flight_options = []
-        hotel_options = []
-        car_options = []
-        
-        for key, value in results.items():
-            if 'FlightBookingAgent' in key and isinstance(value, (list, dict)):
-                if isinstance(value, list):
-                    flight_options.extend(value)
-                else:
-                    flight_options.append(value)
-            elif 'HotelBookingAgent' in key and isinstance(value, (list, dict)):
-                if isinstance(value, list):
-                    hotel_options.extend(value)
-                else:
-                    hotel_options.append(value)
-            elif 'CarRentalAgent' in key and isinstance(value, (list, dict)):
-                if isinstance(value, list):
-                    car_options.extend(value)
-                else:
-                    car_options.append(value)
-        
-        logger.info(f"Found options: {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars")
-        
-        # Determine selection criteria (use request value or fall back to default)
-        criteria = request.selection_criteria or DEFAULT_SELECTION_CRITERIA
-        logger.debug(f"Using selection criteria: {criteria}")
-        
-        # Auto-select best options based on criteria
-        selected_flight = select_best_option(flight_options, criteria)
-        selected_hotel = select_best_option(hotel_options, criteria)
-        selected_car = select_best_option(car_options, criteria)
-        
-        logger.info(f"Auto-selected: flight={selected_flight is not None}, hotel={selected_hotel is not None}, car={selected_car is not None}")
-        
-        # Create draft itinerary with selected options
-        repo = ItineraryRepository(db)
-        itinerary = repo.create(
-            traveler_id=request.traveler_id,
-            original_query=request.query,
-            flight_data=selected_flight,
-            hotel_data=selected_hotel,
-            car_data=selected_car,
-        )
-        
-        logger.info(f"Created draft itinerary: id={itinerary.id}")
-        
-        # Generate summary using ResponseFormatter if requested
-        summary = None
-        if request.include_summary:
-            try:
-                from agents.response_formatter import ResponseFormatter
-                formatter = ResponseFormatter(llm=llm)
-                summary = formatter.format_results(
-                    results={
-                        "flight": selected_flight,
-                        "hotel": selected_hotel,
-                        "car": selected_car,
-                    },
-                    intent=intent
-                )
-                logger.debug("Generated summary via ResponseFormatter")
-            except Exception as e:
-                logger.warning(f"Failed to generate summary: {e}")
-                summary = f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars"
-        else:
-            summary = f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars"
-        
-        logger.info(f"Plan trip completed: itinerary_id={itinerary.id}")
+        logger.info(f"Plan trip completed: itinerary_id={result['itinerary_id']}")
         
         return PlanResponse(
-            itinerary_id=itinerary.id,
-            flight_options=flight_options,
-            hotel_options=hotel_options,
-            car_options=car_options,
-            selected_flight=selected_flight,
-            selected_hotel=selected_hotel,
-            selected_car=selected_car,
-            selection_criteria_used=criteria.value,
-            summary=summary,
+            itinerary_id=result["itinerary_id"],
+            flight_options=result["flight_options"],
+            hotel_options=result["hotel_options"],
+            car_options=result["car_options"],
+            flight_reservation=result["flight_reservation"],
+            hotel_reservation=result["hotel_reservation"],
+            car_reservation=result["car_reservation"],
+            selection_criteria_used=result["selection_criteria_used"],
+            summary=result["summary"],
             query=request.query
         )
         
+    except LLMUnavailableError as e:
+        handle_domain_exception(e)
     except Exception as e:
         logger.error(f"Plan trip failed: {type(e).__name__}: {str(e)}")
         raise HTTPException(
@@ -631,118 +473,57 @@ def plan_trip(
 def modify_itinerary_nl(
     itinerary_id: str,
     request: NaturalLanguageModifyRequest,
-    db: Session = Depends(get_db),
-    llm: Optional[LLMProvider] = Depends(get_llm),
+    ctx: TravelContext = Depends(get_context),
+    orchestrator: Orchestrator = Depends(get_orchestrator),
 ):
     """
     Modify an itinerary using natural language instructions.
-    Uses LLM to interpret the instruction and update relevant components.
+    
+    Loads conversation context into TravelContext, then delegates to Orchestrator.
     """
     logger.info(f"Modify itinerary request: id={itinerary_id}, instruction='{request.instruction[:50]}...'" if len(request.instruction) > 50 else f"Modify itinerary request: id={itinerary_id}, instruction='{request.instruction}'")
     
-    if llm is None:
-        from api.dependencies import get_expected_api_key_name, get_llm_provider_name
-        api_key_name = get_expected_api_key_name()
-        provider = get_llm_provider_name()
-        logger.error(f"LLM service unavailable - {api_key_name} not set for provider '{provider}'")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=create_error_response(
-                "LLM_UNAVAILABLE",
-                f"LLM service is not available. Set {api_key_name} environment variable.",
-                503
-            )
-        )
-    
-    # Get current itinerary
-    repo = ItineraryRepository(db)
-    chat_repo = ChatHistoryRepository(db)
+    # Populate context from request
+    ctx.traveler_id = request.traveler_id
+    ctx.itinerary_id = itinerary_id
     
     try:
-        itinerary = repo.get_by_id_or_raise(itinerary_id)
-    except ItineraryNotFoundError:
-        logger.warning(f"Modify failed - itinerary not found: id={itinerary_id}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=create_error_response(
-                "ITINERARY_NOT_FOUND",
-                f"Itinerary with id '{itinerary_id}' does not exist",
-                404
-            )
+        # Load conversation state into context
+        repo = TravelItineraryRepository(ctx.session)
+        ctx.itinerary = repo.get_by_id_or_raise(itinerary_id)
+        ctx.original_query = ctx.itinerary.original_query
+        
+        chat_repo = ChatMessageRepository(ctx.session)
+        ctx.chat_history = chat_repo.get_history(itinerary_id, limit=10)
+        
+        # Delegate to orchestrator (thin route)
+        result = orchestrator.modify_itinerary(request.instruction, ctx)
+        
+        # Save chat messages
+        chat_repo.add_message(itinerary_id, "user", request.instruction)
+        if result.get("message"):
+            chat_repo.add_message(itinerary_id, "assistant", result["message"])
+        
+        logger.info(f"Modification processed for itinerary id={itinerary_id}")
+        
+        return ModifyResponse(
+            success=result["success"],
+            updated_itinerary=itinerary_to_response(result["updated_itinerary"]) if result.get("updated_itinerary") else None,
+            message=result["message"],
+            partial=result.get("partial", False)
         )
-    
-    if itinerary.status != "draft":
-        logger.warning(f"Cannot modify itinerary id={itinerary_id} in status={itinerary.status}")
+        
+    except (ItineraryNotFoundError, LLMUnavailableError) as e:
+        handle_domain_exception(e)
+    except InvalidStatusTransitionError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=create_error_response(
                 "CANNOT_MODIFY_CONFIRMED",
-                f"Cannot modify itinerary in '{itinerary.status}' status",
+                f"Cannot modify itinerary in '{e.current_status}' status",
                 400
             )
         )
-    
-    try:
-        # Get chat history for context
-        logger.debug(f"Getting chat history for itinerary id={itinerary_id}")
-        chat_history = chat_repo.get_history(itinerary_id, limit=10)
-        
-        # Build context for LLM
-        current_state = {
-            "flight": itinerary.flight_data,
-            "hotel": itinerary.hotel_data,
-            "car": itinerary.car_data,
-            "total_cost": itinerary.total_cost,
-        }
-        
-        # Create prompt for LLM to determine what to modify
-        history_text = "\n".join([f"{m.role}: {m.content}" for m in chat_history])
-        
-        modification_prompt = f"""You are a travel agent assistant. Based on the current itinerary state and user instruction, determine what needs to be modified.
-
-Current Itinerary State:
-{current_state}
-
-Previous Conversation:
-{history_text}
-
-User Instruction: {request.instruction}
-
-Analyze the instruction and respond with a JSON object containing:
-- "component": which component to modify ("flight", "hotel", or "car")
-- "action": what action to take ("search_new", "remove", "update")
-- "parameters": any search parameters extracted from the instruction
-
-Respond with ONLY the JSON object."""
-
-        # Get LLM response
-        logger.debug("Invoking LLM for modification analysis")
-        llm_response = llm.invoke(modification_prompt)
-        logger.debug(f"LLM response received")
-        
-        # Save chat messages
-        chat_repo.add_message(itinerary_id, "user", request.instruction)
-        
-        # For now, return a simplified response
-        # Full implementation would parse LLM response and call appropriate agents
-        chat_repo.add_message(
-            itinerary_id, 
-            "assistant", 
-            f"Processing modification request: {request.instruction}"
-        )
-        
-        # Refresh itinerary
-        db.refresh(itinerary)
-        
-        logger.info(f"Modification request processed for itinerary id={itinerary_id}")
-        
-        return ModifyResponse(
-            success=True,
-            updated_itinerary=itinerary_to_response(itinerary),
-            message=f"Modification request received: {request.instruction}. Full LLM modification implementation pending.",
-            partial=False
-        )
-        
     except Exception as e:
         logger.error(f"Modification failed for itinerary id={itinerary_id}: {type(e).__name__}: {str(e)}")
         raise HTTPException(
@@ -753,4 +534,3 @@ Respond with ONLY the JSON object."""
                 500
             )
         )
-

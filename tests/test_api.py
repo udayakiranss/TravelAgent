@@ -9,7 +9,8 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from main_web import app
-from api.dependencies import get_db, get_llm
+from api.dependencies import get_db, get_llm, get_orchestrator
+from agents.orchestrator import Orchestrator
 from database.models import Itinerary, ChatHistory
 
 
@@ -44,8 +45,15 @@ def client_fixture(session: Session):
         # Return None for most tests (no LLM)
         return None
     
+    def get_orchestrator_override():
+        # Return fresh orchestrator with no LLM
+        orch = Orchestrator(llm=None)
+        orch.llm = None
+        return orch
+    
     app.dependency_overrides[get_db] = get_session_override
     app.dependency_overrides[get_llm] = get_llm_override
+    app.dependency_overrides[get_orchestrator] = get_orchestrator_override
     
     client = TestClient(app)
     yield client
@@ -77,8 +85,13 @@ def client_with_llm_fixture(session: Session, mock_llm):
     def get_llm_override():
         return mock_llm
     
+    def get_orchestrator_override():
+        # Return fresh orchestrator with mocked LLM
+        return Orchestrator(llm=mock_llm)
+    
     app.dependency_overrides[get_db] = get_session_override
     app.dependency_overrides[get_llm] = get_llm_override
+    app.dependency_overrides[get_orchestrator] = get_orchestrator_override
     
     client = TestClient(app)
     yield client
@@ -255,14 +268,14 @@ class TestItineraryCRUD:
             f"/api/v1/itineraries/{itinerary.id}",
             json={
                 "version": 1,
-                "flight_data": {"airline": "Test Air", "price": 500}
+                "flight_reservation": {"airline": "Test Air", "price": 500}
             }
         )
         
         assert response.status_code == 200
         data = response.json()
         assert data["version"] == 2
-        assert data["flight_data"]["airline"] == "Test Air"
+        assert data["flight_reservation"]["airline"] == "Test Air"
         assert data["total_cost"] == 500
     
     def test_update_itinerary_version_conflict(self, client: TestClient, session: Session):
@@ -278,7 +291,7 @@ class TestItineraryCRUD:
             f"/api/v1/itineraries/{itinerary.id}",
             json={
                 "version": 1,  # Wrong version
-                "flight_data": {"airline": "Test Air"}
+                "flight_reservation": {"airline": "Test Air"}
             }
         )
         
@@ -312,7 +325,7 @@ class TestItineraryCRUD:
         
         assert response.status_code == 400
         data = response.json()
-        assert data["detail"]["error"] == "CANNOT_DELETE_CONFIRMED"
+        assert data["detail"]["error"] == "INVALID_STATUS_TRANSITION"
 
 
 # =============================================================================
@@ -442,9 +455,10 @@ class TestLLMOperations:
             }
         )
         
-        assert response.status_code == 400
+        assert response.status_code == 200
         data = response.json()
-        assert data["detail"]["error"] == "CANNOT_MODIFY_CONFIRMED"
+        assert data["success"] is False
+        assert "Cannot modify itinerary" in data["message"]
 
 
 # =============================================================================
@@ -472,7 +486,7 @@ class TestIntegration:
             f"/api/v1/itineraries/{itinerary_id}",
             json={
                 "version": 1,
-                "flight_data": {"airline": "Air France", "price": 500}
+                "flight_reservation": {"airline": "Air France", "price": 500}
             }
         )
         assert update_response.status_code == 200
@@ -483,7 +497,7 @@ class TestIntegration:
             f"/api/v1/itineraries/{itinerary_id}",
             json={
                 "version": 2,
-                "hotel_data": {"name": "Paris Hotel", "price": 300}
+                "hotel_reservation": {"name": "Paris Hotel", "price": 300}
             }
         )
         assert update_response.status_code == 200
@@ -499,7 +513,7 @@ class TestIntegration:
             f"/api/v1/itineraries/{itinerary_id}",
             json={
                 "version": 3,
-                "car_data": {"company": "Hertz", "price": 100}
+                "car_reservation": {"company": "Hertz", "price": 100}
             }
         )
         assert update_response.status_code == 400

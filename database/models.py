@@ -62,23 +62,23 @@ class Itinerary(SQLModel, table=True):
         description="Itinerary status: draft, confirmed, cancelled"
     )
     
-    # Partitioned JSON fields for each booking type
-    flight_data: Optional[Dict[str, Any]] = Field(
+    # Partitioned JSON fields for each reservation type
+    flight_reservation: Optional[Dict[str, Any]] = Field(
         default=None,
         sa_column=Column(JSON),
-        description="Flight booking details"
+        description="Flight reservation details"
     )
     
-    hotel_data: Optional[Dict[str, Any]] = Field(
+    hotel_reservation: Optional[Dict[str, Any]] = Field(
         default=None,
         sa_column=Column(JSON),
-        description="Hotel booking details"
+        description="Hotel reservation details"
     )
     
-    car_data: Optional[Dict[str, Any]] = Field(
+    car_reservation: Optional[Dict[str, Any]] = Field(
         default=None,
         sa_column=Column(JSON),
-        description="Car rental details"
+        description="Car rental reservation details"
     )
     
     # Computed total cost (persisted for quick access)
@@ -113,17 +113,17 @@ class Itinerary(SQLModel, table=True):
     chat_messages: list["ChatHistory"] = Relationship(back_populates="itinerary")
     
     def calculate_total_cost(self) -> float:
-        """Recalculate total cost from all booking components."""
+        """Recalculate total cost from all reservation components."""
         total = 0.0
         
-        if self.flight_data and isinstance(self.flight_data, dict):
-            total += self.flight_data.get('total_price', self.flight_data.get('price', 0))
+        if self.flight_reservation and isinstance(self.flight_reservation, dict):
+            total += self.flight_reservation.get('total_price', self.flight_reservation.get('price', 0))
         
-        if self.hotel_data and isinstance(self.hotel_data, dict):
-            total += self.hotel_data.get('total_price', self.hotel_data.get('price', 0))
+        if self.hotel_reservation and isinstance(self.hotel_reservation, dict):
+            total += self.hotel_reservation.get('total_price', self.hotel_reservation.get('price', 0))
         
-        if self.car_data and isinstance(self.car_data, dict):
-            total += self.car_data.get('total_price', self.car_data.get('price', 0))
+        if self.car_reservation and isinstance(self.car_reservation, dict):
+            total += self.car_reservation.get('total_price', self.car_reservation.get('price', 0))
         
         return total
 

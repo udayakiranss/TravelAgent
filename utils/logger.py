@@ -1,56 +1,77 @@
 # logger.py
-# Comprehensive logging system with method entry/exit tracking
+# Comprehensive logging system with method entry/exit tracking and performance timing
 import logging
 import sys
 import os
 import uuid
 import functools
 import inspect
+import time
+from contextvars import ContextVar
 from typing import Optional, Callable, Any
 from datetime import datetime
 from pathlib import Path
 
 
+# Context variable for async-safe per-request session tracking
+_request_id_var: ContextVar[Optional[str]] = ContextVar('request_id', default=None)
+
+
 class SessionContext:
-    """Context manager for session ID tracking"""
-    _current_session_id: Optional[str] = None
+    """
+    Context manager for request ID tracking.
+    
+    Uses contextvars for async-safe per-request correlation.
+    Each HTTP request gets its own request_id that propagates through all logs.
+    """
     
     @classmethod
     def get_session_id(cls) -> str:
-        """Get current session ID or create a new one"""
-        if cls._current_session_id is None:
-            cls._current_session_id = str(uuid.uuid4())
-        return cls._current_session_id
+        """Get current request ID or generate a fallback"""
+        request_id = _request_id_var.get()
+        if request_id is None:
+            # Fallback for non-request contexts (startup, background tasks)
+            return "NO-REQ-ID"
+        return request_id
     
     @classmethod
     def set_session_id(cls, session_id: str):
-        """Set the current session ID"""
-        cls._current_session_id = session_id
+        """Set the current request ID (called per-request)"""
+        _request_id_var.set(session_id)
     
     @classmethod
     def new_session(cls) -> str:
-        """Create a new session and return its ID"""
-        cls._current_session_id = str(uuid.uuid4())
-        return cls._current_session_id
+        """Create a new request ID and return it"""
+        new_id = str(uuid.uuid4())
+        _request_id_var.set(new_id)
+        return new_id
     
     @classmethod
     def clear_session(cls):
-        """Clear the current session"""
-        cls._current_session_id = None
+        """Clear the current request ID"""
+        _request_id_var.set(None)
+    
+    @classmethod
+    def get_request_id(cls) -> Optional[str]:
+        """Get the raw request ID (may be None)"""
+        return _request_id_var.get()
 
 
 class ContextualFormatter(logging.Formatter):
-    """Custom formatter that includes filename, line number, and session ID"""
+    """Custom formatter that includes filename, line number, and request ID"""
     
     def format(self, record: logging.LogRecord) -> str:
-        # Get session ID
-        session_id = SessionContext.get_session_id()
+        # Get request ID for correlation
+        request_id = SessionContext.get_session_id()
         
-        # Format session ID (first 8 chars for readability)
-        session_short = session_id[:8] if session_id else "NO-SESSION"
+        # Format request ID (first 8 chars for readability, or special names like STARTUP/SHUTDOWN)
+        if request_id in ("STARTUP", "SHUTDOWN", "NO-REQ-ID"):
+            request_id_short = request_id
+        else:
+            request_id_short = request_id[:8] if request_id else "NO-REQ-ID"
         
         # Add custom fields
-        record.session_id = session_short
+        record.request_id = request_id_short
         record.filename = os.path.basename(record.pathname)
         record.line_number = record.lineno
         
@@ -114,7 +135,7 @@ class TravelBookingLogger:
         
         # Create formatter
         formatter = ContextualFormatter(
-            fmt='%(timestamp)s | %(levelname)-8s | [%(session_id)s] | %(filename)s:%(line_number)d | %(funcName)s | %(message)s',
+            fmt='%(timestamp)s | %(levelname)-8s | [%(request_id)s] | %(filename)s:%(line_number)d | %(funcName)s | %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         
@@ -402,5 +423,191 @@ class LogContext:
             log_func(f"← {self.message} | success")
         else:
             self.logger.error(f"← {self.message} | exception: {exc_type.__name__}: {str(exc_val)}")
+        return False
+
+
+# ============================================================================
+# Performance Timing Utilities
+# ============================================================================
+
+def _format_duration(duration_ms: float) -> str:
+    """Format duration in human-readable form"""
+    if duration_ms < 1:
+        return f"{duration_ms * 1000:.0f}µs"
+    elif duration_ms < 1000:
+        return f"{duration_ms:.1f}ms"
+    elif duration_ms < 60000:
+        return f"{duration_ms / 1000:.2f}s"
+    else:
+        minutes = int(duration_ms // 60000)
+        seconds = (duration_ms % 60000) / 1000
+        return f"{minutes}m {seconds:.1f}s"
+
+
+class Timer:
+    """
+    Context manager for timing code blocks.
+    
+    Usage:
+        with Timer("LLM call") as t:
+            result = llm.invoke(prompt)
+        # Logs: "LLM call completed in 1.23s"
+        
+        # Or access duration manually:
+        with Timer("DB query", log=False) as t:
+            result = db.query(...)
+        print(f"Query took {t.duration_ms}ms")
+    """
+    
+    def __init__(self, operation: str, level: str = "DEBUG", log: bool = True):
+        """
+        Args:
+            operation: Name of the operation being timed
+            level: Log level (DEBUG, INFO, WARNING)
+            log: Whether to auto-log on exit (default True)
+        """
+        self.operation = operation
+        self.level = level.upper()
+        self.log = log
+        self.logger = get_logger()
+        self.start_time: float = 0
+        self.end_time: float = 0
+        self.duration_ms: float = 0
+    
+    def __enter__(self) -> "Timer":
+        self.start_time = time.perf_counter()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.end_time = time.perf_counter()
+        self.duration_ms = (self.end_time - self.start_time) * 1000
+        
+        if self.log:
+            duration_str = _format_duration(self.duration_ms)
+            if exc_type is None:
+                log_func = getattr(self.logger, self.level.lower())
+                log_func(f"⏱ {self.operation} completed in {duration_str}")
+            else:
+                self.logger.error(f"⏱ {self.operation} failed after {duration_str}: {exc_type.__name__}")
+        
+        return False
+    
+    @property
+    def elapsed_ms(self) -> float:
+        """Get elapsed time in milliseconds (can be called during execution)"""
+        if self.end_time > 0:
+            return self.duration_ms
+        return (time.perf_counter() - self.start_time) * 1000
+
+
+def timed(operation: Optional[str] = None, level: str = "DEBUG"):
+    """
+    Decorator to time function execution.
+    
+    Usage:
+        @timed("search flights")
+        def search_flights(params):
+            ...
+        # Logs: "⏱ search flights completed in 45.2ms"
+        
+        @timed()  # Uses function name
+        def process_data():
+            ...
+        # Logs: "⏱ process_data completed in 123.4ms"
+    """
+    def decorator(func: Callable) -> Callable:
+        op_name = operation or func.__name__
+        
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            with Timer(op_name, level=level):
+                return func(*args, **kwargs)
+        
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            with Timer(op_name, level=level):
+                return await func(*args, **kwargs)
+        
+        # Return appropriate wrapper based on function type
+        if inspect.iscoroutinefunction(func):
+            return async_wrapper
+        return sync_wrapper
+    
+    return decorator
+
+
+class PerformanceMetrics:
+    """
+    Aggregates timing metrics for a request.
+    
+    Usage:
+        metrics = PerformanceMetrics()
+        
+        with metrics.time("llm_call"):
+            result = llm.invoke(...)
+        
+        with metrics.time("db_query"):
+            data = db.query(...)
+        
+        metrics.log_summary()
+        # Logs: "Request metrics: llm_call=1234ms, db_query=45ms, total=1279ms"
+    """
+    
+    def __init__(self):
+        self.timings: dict[str, float] = {}
+        self.start_time = time.perf_counter()
+        self.logger = get_logger()
+    
+    def time(self, operation: str) -> "MetricTimer":
+        """Create a timer that records to this metrics instance"""
+        return MetricTimer(operation, self)
+    
+    def record(self, operation: str, duration_ms: float):
+        """Manually record a timing"""
+        if operation in self.timings:
+            self.timings[operation] += duration_ms
+        else:
+            self.timings[operation] = duration_ms
+    
+    @property
+    def total_ms(self) -> float:
+        """Total elapsed time since metrics creation"""
+        return (time.perf_counter() - self.start_time) * 1000
+    
+    def log_summary(self, level: str = "INFO"):
+        """Log a summary of all recorded timings"""
+        if not self.timings:
+            return
+        
+        parts = [f"{op}={_format_duration(ms)}" for op, ms in self.timings.items()]
+        total = _format_duration(self.total_ms)
+        summary = f"⏱ Request metrics: {', '.join(parts)}, total={total}"
+        
+        log_func = getattr(self.logger, level.lower())
+        log_func(summary)
+    
+    def to_dict(self) -> dict:
+        """Return timings as a dictionary (for API responses)"""
+        return {
+            **{k: round(v, 2) for k, v in self.timings.items()},
+            "total_ms": round(self.total_ms, 2)
+        }
+
+
+class MetricTimer:
+    """Timer that records to a PerformanceMetrics instance"""
+    
+    def __init__(self, operation: str, metrics: PerformanceMetrics):
+        self.operation = operation
+        self.metrics = metrics
+        self.start_time: float = 0
+    
+    def __enter__(self) -> "MetricTimer":
+        self.start_time = time.perf_counter()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        duration_ms = (time.perf_counter() - self.start_time) * 1000
+        self.metrics.record(self.operation, duration_ms)
         return False
 

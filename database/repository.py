@@ -4,11 +4,12 @@ Provides CRUD operations for Itinerary and ChatHistory models.
 """
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
+import time
 from sqlmodel import Session, select
 from sqlalchemy import func
 
 from .models import Itinerary, ChatHistory
-from utils.logger import get_logger
+from utils.logger import get_logger, _format_duration
 
 # Initialize logger
 logger = get_logger()
@@ -41,7 +42,14 @@ class InvalidStatusTransitionError(Exception):
         )
 
 
-class ItineraryRepository:
+class LLMUnavailableError(Exception):
+    """Raised when LLM service is required but not available."""
+    def __init__(self, message: str = "LLM service is not available"):
+        self.message = message
+        super().__init__(message)
+
+
+class TravelItineraryRepository:
     """Repository for Itinerary CRUD operations with optimistic locking."""
     
     def __init__(self, session: Session):
@@ -55,9 +63,9 @@ class ItineraryRepository:
         self,
         traveler_id: str,
         original_query: Optional[str] = None,
-        flight_data: Optional[Dict[str, Any]] = None,
-        hotel_data: Optional[Dict[str, Any]] = None,
-        car_data: Optional[Dict[str, Any]] = None,
+        flight_reservation: Optional[Dict[str, Any]] = None,
+        hotel_reservation: Optional[Dict[str, Any]] = None,
+        car_reservation: Optional[Dict[str, Any]] = None,
     ) -> Itinerary:
         """
         Create a new itinerary in draft status.
@@ -65,20 +73,22 @@ class ItineraryRepository:
         Args:
             traveler_id: Identifier for the traveler
             original_query: Original NL query that created this
-            flight_data: Flight booking details
-            hotel_data: Hotel booking details
-            car_data: Car rental details
+            flight_reservation: Flight reservation details
+            hotel_reservation: Hotel reservation details
+            car_reservation: Car rental reservation details
         
         Returns:
             Created Itinerary instance
         """
+        start_time = time.perf_counter()
+        
         itinerary = Itinerary(
             traveler_id=traveler_id,
             original_query=original_query,
             status="draft",
-            flight_data=flight_data,
-            hotel_data=hotel_data,
-            car_data=car_data,
+            flight_reservation=flight_reservation,
+            hotel_reservation=hotel_reservation,
+            car_reservation=car_reservation,
         )
         
         # Calculate and set total cost
@@ -88,7 +98,8 @@ class ItineraryRepository:
         self.session.commit()
         self.session.refresh(itinerary)
         
-        logger.info(f"Created itinerary: id={itinerary.id}, traveler_id={traveler_id}")
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⏱ DB create: {_format_duration(duration_ms)} | Created itinerary: id={itinerary.id}, traveler_id={traveler_id}")
         return itinerary
     
     # =========================================================================
@@ -125,6 +136,8 @@ class ItineraryRepository:
         Returns:
             Tuple of (list of itineraries, total count)
         """
+        start_time = time.perf_counter()
+        
         # Clamp limit
         limit = min(max(1, limit), 100)
         offset = (max(1, page) - 1) * limit
@@ -151,6 +164,9 @@ class ItineraryRepository:
         itineraries = list(self.session.exec(query).all())
         total = self.session.exec(count_query).one()
         
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.debug(f"⏱ DB list: {_format_duration(duration_ms)} | {len(itineraries)} items, {total} total")
+        
         return itineraries, total
     
     # =========================================================================
@@ -161,9 +177,9 @@ class ItineraryRepository:
         self,
         itinerary_id: str,
         version: int,
-        flight_data: Optional[Dict[str, Any]] = ...,  # Use ... as sentinel for "not provided"
-        hotel_data: Optional[Dict[str, Any]] = ...,
-        car_data: Optional[Dict[str, Any]] = ...,
+        flight_reservation: Optional[Dict[str, Any]] = ...,  # Use ... as sentinel for "not provided"
+        hotel_reservation: Optional[Dict[str, Any]] = ...,
+        car_reservation: Optional[Dict[str, Any]] = ...,
     ) -> Itinerary:
         """
         Update an itinerary with optimistic locking.
@@ -171,9 +187,9 @@ class ItineraryRepository:
         Args:
             itinerary_id: ID of itinerary to update
             version: Expected version (for optimistic locking)
-            flight_data: New flight data (None to clear, ... to keep existing)
-            hotel_data: New hotel data (None to clear, ... to keep existing)
-            car_data: New car data (None to clear, ... to keep existing)
+            flight_reservation: New flight reservation (None to clear, ... to keep existing)
+            hotel_reservation: New hotel reservation (None to clear, ... to keep existing)
+            car_reservation: New car reservation (None to clear, ... to keep existing)
         
         Returns:
             Updated Itinerary instance
@@ -196,12 +212,12 @@ class ItineraryRepository:
             raise VersionConflictError(version, itinerary.version)
         
         # Update fields (... means "not provided", None means "clear")
-        if flight_data is not ...:
-            itinerary.flight_data = flight_data
-        if hotel_data is not ...:
-            itinerary.hotel_data = hotel_data
-        if car_data is not ...:
-            itinerary.car_data = car_data
+        if flight_reservation is not ...:
+            itinerary.flight_reservation = flight_reservation
+        if hotel_reservation is not ...:
+            itinerary.hotel_reservation = hotel_reservation
+        if car_reservation is not ...:
+            itinerary.car_reservation = car_reservation
         
         # Recalculate total cost
         itinerary.total_cost = itinerary.calculate_total_cost()
@@ -210,11 +226,13 @@ class ItineraryRepository:
         itinerary.version += 1
         itinerary.updated_at = datetime.now(timezone.utc)
         
+        commit_start = time.perf_counter()
         self.session.add(itinerary)
         self.session.commit()
         self.session.refresh(itinerary)
         
-        logger.info(f"Updated itinerary: id={itinerary_id}, new_version={itinerary.version}, total_cost={itinerary.total_cost}")
+        duration_ms = (time.perf_counter() - commit_start) * 1000
+        logger.info(f"⏱ DB update: {_format_duration(duration_ms)} | id={itinerary_id}, v{itinerary.version}, ${itinerary.total_cost}")
         return itinerary
     
     # =========================================================================
@@ -239,11 +257,13 @@ class ItineraryRepository:
         itinerary.version += 1
         itinerary.updated_at = datetime.now(timezone.utc)
         
+        commit_start = time.perf_counter()
         self.session.add(itinerary)
         self.session.commit()
         self.session.refresh(itinerary)
         
-        logger.info(f"Confirmed itinerary: id={itinerary_id}")
+        duration_ms = (time.perf_counter() - commit_start) * 1000
+        logger.info(f"⏱ DB confirm: {_format_duration(duration_ms)} | id={itinerary_id}")
         return itinerary
     
     def cancel(self, itinerary_id: str) -> Itinerary:
@@ -265,11 +285,13 @@ class ItineraryRepository:
         itinerary.version += 1
         itinerary.updated_at = datetime.now(timezone.utc)
         
+        commit_start = time.perf_counter()
         self.session.add(itinerary)
         self.session.commit()
         self.session.refresh(itinerary)
         
-        logger.info(f"Cancelled itinerary: id={itinerary_id}")
+        duration_ms = (time.perf_counter() - commit_start) * 1000
+        logger.info(f"⏱ DB cancel: {_format_duration(duration_ms)} | id={itinerary_id}")
         return itinerary
     
     # =========================================================================
@@ -303,8 +325,8 @@ class ItineraryRepository:
         return True
 
 
-class ChatHistoryRepository:
-    """Repository for ChatHistory operations."""
+class ChatMessageRepository:
+    """Repository for ChatHistory/ChatMessage operations."""
     
     def __init__(self, session: Session):
         self.session = session
@@ -383,3 +405,11 @@ class ChatHistoryRepository:
         
         return count
 
+
+# =============================================================================
+# Backward Compatibility Aliases
+# =============================================================================
+
+# Alias for backward compatibility during migration
+ItineraryRepository = TravelItineraryRepository
+ChatHistoryRepository = ChatMessageRepository
