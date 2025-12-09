@@ -3,9 +3,20 @@
 from typing import Optional, Dict, Any
 from abc import ABC, abstractmethod
 import json
-from utils.logger import get_logger, log_method_entry_exit
+import time
+from utils.logger import get_logger, _format_duration
 
 logger = get_logger()
+
+# Max characters to log for LLM content (prompts/responses)
+_LOG_CONTENT_MAX_CHARS = 100
+
+
+def _truncate_for_log(text: str, max_chars: int = _LOG_CONTENT_MAX_CHARS) -> str:
+    """Truncate text for logging, showing first N chars with indicator."""
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}... [truncated, total {len(text)} chars]"
 
 try:
     from langchain.chat_models import init_chat_model
@@ -31,7 +42,6 @@ class LLMProvider(ABC):
 class LangChainLLMProvider(LLMProvider):
     """LangChain-based LLM provider supporting multiple models"""
     
-    @log_method_entry_exit(level="DEBUG")
     def __init__(self, model_name: str = "gpt-4o", model_provider: str = "openai", 
                  temperature: float = 0, **kwargs):
         """
@@ -43,8 +53,6 @@ class LangChainLLMProvider(LLMProvider):
             temperature: Sampling temperature
             **kwargs: Additional model-specific parameters
         """
-        logger.debug(f"Initializing LLM provider: {model_name} ({model_provider})")
-        
         if not LANGCHAIN_AVAILABLE:
             logger.error("LangChain is not available")
             raise ImportError("LangChain is required. Install with: pip install langchain langchain-openai")
@@ -54,101 +62,133 @@ class LangChainLLMProvider(LLMProvider):
         self.temperature = temperature
         
         try:
-            # Try to initialize using init_chat_model (LangChain 1.1.0+)
-            logger.debug(f"Attempting to initialize using init_chat_model")
             self.llm = init_chat_model(
                 model_name,
                 model_provider=model_provider,
                 temperature=temperature,
                 **kwargs
             )
-            logger.info(f"Successfully initialized LLM: {model_name} ({model_provider})")
+            logger.info(f"LLM initialized: {model_name} ({model_provider})")
         except Exception as e:
             logger.warning(f"init_chat_model failed: {e}, trying fallback")
-            # Fallback to direct ChatOpenAI for OpenAI models
             if model_provider == "openai":
                 try:
-                    logger.debug("Attempting fallback to ChatOpenAI")
                     self.llm = ChatOpenAI(
                         model=model_name,
                         temperature=temperature,
                         **kwargs
                     )
-                    logger.info(f"Successfully initialized LLM using fallback: {model_name}")
+                    logger.info(f"LLM initialized via fallback: {model_name}")
                 except Exception as fallback_error:
-                    logger.error(f"Fallback initialization also failed: {fallback_error}")
+                    logger.error(f"LLM initialization failed: {fallback_error}")
                     raise RuntimeError(f"Failed to initialize LLM: {e}")
             else:
-                logger.error(f"Failed to initialize LLM for provider {model_provider}: {e}")
+                logger.error(f"LLM initialization failed for {model_provider}: {e}")
                 raise RuntimeError(f"Failed to initialize LLM: {e}")
     
-    @log_method_entry_exit(level="DEBUG")
     def invoke(self, prompt: str, **kwargs) -> str:
         """Invoke the LLM with a prompt"""
-        logger.debug(f"Invoking LLM with prompt length: {len(prompt)} characters")
-        logger.debug(f"LLM Request (prompt):\n{prompt}")
-        if kwargs:
-            logger.debug(f"LLM Request (kwargs): {kwargs}")
+        logger.debug(f"LLM invoke: prompt={len(prompt)} chars, preview={_truncate_for_log(prompt)}")
+        
+        start_time = time.perf_counter()
         try:
             response = self.llm.invoke(prompt, **kwargs)
-            if hasattr(response, 'content'):
-                result = response.content
-                logger.debug(f"LLM invocation successful, response length: {len(result)} characters")
-                logger.debug(f"LLM Response:\n{result}")
-                return result
-            result = str(response)
-            logger.debug(f"LLM invocation successful, response length: {len(result)} characters")
-            logger.debug(f"LLM Response:\n{result}")
+            result = response.content if hasattr(response, 'content') else str(response)
+            
+            # Calculate timing
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            duration_str = _format_duration(duration_ms)
+            
+            # Extract token usage from response metadata (if available)
+            token_info = self._extract_token_usage(response)
+            
+            # Log response with timing and tokens
+            if token_info:
+                logger.info(f"⏱ LLM call: {duration_str} | tokens: {token_info['input']} in, {token_info['output']} out, {token_info['total']} total")
+            else:
+                logger.info(f"⏱ LLM call: {duration_str} | {len(prompt)} chars -> {len(result)} chars")
+            
             return result
         except Exception as e:
-            logger.error(f"LLM invocation failed: {e}", exc_info=True)
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            duration_str = _format_duration(duration_ms)
+            logger.error(f"⏱ LLM call failed after {duration_str}: {e}")
             raise RuntimeError(f"LLM invocation failed: {e}")
     
-    @log_method_entry_exit(level="DEBUG")
+    def _extract_token_usage(self, response) -> Optional[Dict[str, int]]:
+        """Extract token usage from LLM response metadata."""
+        try:
+            # LangChain stores usage in response_metadata for most providers
+            if hasattr(response, 'response_metadata'):
+                metadata = response.response_metadata
+                
+                # OpenAI format
+                if 'token_usage' in metadata:
+                    usage = metadata['token_usage']
+                    return {
+                        'input': usage.get('prompt_tokens', 0),
+                        'output': usage.get('completion_tokens', 0),
+                        'total': usage.get('total_tokens', 0),
+                    }
+                
+                # Alternative format (some providers)
+                if 'usage' in metadata:
+                    usage = metadata['usage']
+                    return {
+                        'input': usage.get('input_tokens', usage.get('prompt_tokens', 0)),
+                        'output': usage.get('output_tokens', usage.get('completion_tokens', 0)),
+                        'total': usage.get('total_tokens', 0),
+                    }
+            
+            # Anthropic/other providers may use usage_metadata
+            if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                usage = response.usage_metadata
+                return {
+                    'input': getattr(usage, 'input_tokens', 0),
+                    'output': getattr(usage, 'output_tokens', 0),
+                    'total': getattr(usage, 'total_tokens', 0),
+                }
+            
+            return None
+        except Exception:
+            return None
+    
     def invoke_structured(self, prompt: str, response_format: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Invoke LLM with structured output format"""
-        logger.debug(f"Invoking LLM with structured output format, schema keys: {list(response_format.keys())}")
-        
         # Add format instructions to prompt
         format_instructions = f"\n\nRespond in JSON format matching this schema: {json.dumps(response_format, indent=2)}"
         full_prompt = prompt + format_instructions
-        logger.debug(f"LLM Structured Request (full prompt with format instructions):\n{full_prompt}")
-        if kwargs:
-            logger.debug(f"LLM Structured Request (kwargs): {kwargs}")
+        
+        logger.debug(f"LLM structured invoke: schema_keys={list(response_format.keys())}, prompt={len(full_prompt)} chars")
         
         response_text = self.invoke(full_prompt, **kwargs)
-        logger.debug(f"LLM Structured Response (raw):\n{response_text}")
         
         # Try to parse JSON from response
         try:
             # Extract JSON from response (handle markdown code blocks)
             if "```json" in response_text:
-                logger.debug("Extracting JSON from markdown code block (```json)")
                 json_start = response_text.find("```json") + 7
                 json_end = response_text.find("```", json_start)
                 response_text = response_text[json_start:json_end].strip()
             elif "```" in response_text:
-                logger.debug("Extracting JSON from markdown code block (```)")
                 json_start = response_text.find("```") + 3
                 json_end = response_text.find("```", json_start)
                 response_text = response_text[json_start:json_end].strip()
             
             parsed_response = json.loads(response_text)
-            # Handle both dict and list responses
+            
+            # Log parse result summary
             if isinstance(parsed_response, dict):
-                logger.debug(f"Successfully parsed structured response with keys: {list(parsed_response.keys())}")
+                logger.debug(f"LLM structured response parsed: dict with keys={list(parsed_response.keys())}")
             elif isinstance(parsed_response, list):
-                logger.debug(f"Successfully parsed structured response as list with {len(parsed_response)} items")
-            else:
-                logger.debug(f"Successfully parsed structured response: {type(parsed_response)}")
+                logger.debug(f"LLM structured response parsed: list with {len(parsed_response)} items")
+            
             return parsed_response
         except json.JSONDecodeError as e:
-            # If JSON parsing fails, return raw response
-            logger.warning(f"Failed to parse JSON from response: {e}, returning raw response")
+            logger.warning(f"Failed to parse JSON from LLM response: {e}")
             return {"raw_response": response_text}
 
 
-@log_method_entry_exit(level="DEBUG")
 def create_llm_provider(model_name: str = "gpt-4o", 
                        model_provider: str = "openai",
                        temperature: float = 0,
@@ -165,13 +205,10 @@ def create_llm_provider(model_name: str = "gpt-4o",
     Returns:
         LLMProvider instance
     """
-    logger.debug(f"Creating LLM provider: {model_name} ({model_provider})")
-    provider = LangChainLLMProvider(
+    return LangChainLLMProvider(
         model_name=model_name,
         model_provider=model_provider,
         temperature=temperature,
         **kwargs
     )
-    logger.info(f"LLM provider created successfully: {model_name} ({model_provider})")
-    return provider
 

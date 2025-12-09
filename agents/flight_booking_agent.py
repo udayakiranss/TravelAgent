@@ -1,10 +1,13 @@
 # flight_booking_agent.py
 # Flight booking agent with multiple tools
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from langchain.tools import tool
 from agents.base_agent import BaseAgent
 from data.flights import FLIGHTS
 from utils.logger import get_logger, log_method_entry_exit
+
+if TYPE_CHECKING:
+    from api.context import TravelContext
 
 logger = get_logger()
 
@@ -12,18 +15,16 @@ logger = get_logger()
 @tool
 def search_flights_tool(query: Dict[str, Any]) -> list:
     """Search flights by origin, destination, and date. Returns list of available flights."""
-    frm = query.get('from', '').upper()
-    to = query.get('to', '').upper()
+    origin = query.get('origin', query.get('from', '')).upper()
+    destination = query.get('destination', query.get('to', '')).upper()
     date = query.get('date', '')
-    
-    logger.debug(f"Searching flights: from={frm}, to={to}, date={date}")
     
     results = [
         f for f in FLIGHTS 
-        if f['from'] == frm and f['to'] == to and f['date'] == date
+        if f['from'] == origin and f['to'] == destination and f['date'] == date
     ]
     
-    logger.info(f"Found {len(results)} flights matching criteria")
+    logger.info(f"Flight search: {origin}->{destination} on {date} -> {len(results)} results")
     return results
 
 
@@ -32,16 +33,12 @@ def compare_flights_tool(query: Dict[str, Any]) -> Dict[str, Any]:
     """Compare multiple flights by IDs. Returns comparison with prices and details."""
     flight_ids = query.get('flight_ids', [])
     
-    logger.debug(f"Comparing flights with IDs: {flight_ids}")
-    
     if not flight_ids:
-        logger.warning("No flight IDs provided for comparison")
         return {"error": "No flight IDs provided"}
     
     flights = [f for f in FLIGHTS if f['id'] in flight_ids]
     
     if not flights:
-        logger.warning(f"No flights found for given IDs: {flight_ids}")
         return {"error": "No flights found for given IDs"}
     
     comparison = {
@@ -54,7 +51,7 @@ def compare_flights_tool(query: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     
-    logger.info(f"Compared {len(flights)} flights, price range: ${comparison['price_range']['min']}-${comparison['price_range']['max']}")
+    logger.info(f"Compared {len(flights)} flights: ${comparison['price_range']['min']}-${comparison['price_range']['max']}")
     return comparison
 
 
@@ -64,16 +61,12 @@ def book_flight_tool(query: Dict[str, Any]) -> Dict[str, Any]:
     flight_id = query.get('flight_id')
     passenger_name = query.get('passenger_name', 'Guest')
     
-    logger.debug(f"Booking flight: flight_id={flight_id}, passenger={passenger_name}")
-    
     if not flight_id:
-        logger.warning("Flight ID is required for booking")
         return {"error": "Flight ID is required"}
     
     flight = next((f for f in FLIGHTS if f['id'] == flight_id), None)
     
     if not flight:
-        logger.warning(f"Flight {flight_id} not found")
         return {"error": f"Flight {flight_id} not found"}
     
     booking = {
@@ -84,7 +77,7 @@ def book_flight_tool(query: Dict[str, Any]) -> Dict[str, Any]:
         "total_price": flight['price']
     }
     
-    logger.info(f"Flight booking confirmed: {booking['booking_id']}, price: ${flight['price']}")
+    logger.info(f"Flight booked: {booking['booking_id']} for ${flight['price']}")
     return booking
 
 
@@ -102,24 +95,47 @@ class FlightBookingAgent(BaseAgent):
             'book_flight': book_flight_tool,
         }
     
-    @log_method_entry_exit(level="DEBUG")
-    def execute(self, task: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute flight booking task"""
-        logger.debug(f"FlightBookingAgent executing task: {task} with params: {params}")
-        if task in self.tools:
-            result = self._call_tool(task, params)
-            logger.debug(f"Task '{task}' completed successfully")
-            return result
-        else:
-            # Use LLM to determine which tool to use if task is ambiguous
-            if self.llm:
-                logger.debug(f"Task '{task}' not found in tools, using LLM routing")
-                return self._llm_route_task(task, params)
-            else:
-                logger.warning(f"Unknown task '{task}' for FlightBookingAgent and no LLM available")
-                return {"error": f"Unknown task '{task}' for FlightBookingAgent"}
+    def search_with_selection(
+        self, 
+        params: Dict[str, Any], 
+        ctx: "TravelContext"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Search for flights and return the best option based on context criteria.
+        """
+        all_flights = self._call_tool('search_flights', params)
+        
+        if not all_flights or isinstance(all_flights, dict) and "error" in all_flights:
+            return None
+        
+        selected = self._select_best(all_flights, ctx.criteria)
+        
+        if selected:
+            # Convert to reservation format
+            selected = {
+                **selected,
+                "origin": selected.get("from", selected.get("origin")),
+                "destination": selected.get("to", selected.get("destination")),
+            }
+        
+        return selected
     
-    @log_method_entry_exit(level="DEBUG")
+    def execute(self, task: str, params: Dict[str, Any], ctx: Optional["TravelContext"] = None) -> Any:
+        """Execute flight booking task"""
+        # Handle context-aware search
+        if task == 'search_flights' and ctx is not None:
+            return self.search_with_selection(params, ctx)
+        
+        if task in self.tools:
+            return self._call_tool(task, params)
+        
+        # Use LLM to determine which tool to use if task is ambiguous
+        if self.llm:
+            return self._llm_route_task(task, params)
+        
+        logger.warning(f"Unknown task '{task}' for {self.name}")
+        return {"error": f"Unknown task '{task}' for {self.name}"}
+    
     def _llm_route_task(self, task: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Use LLM to route ambiguous tasks to appropriate tools"""
         available_tools = ", ".join(self.get_available_tools())
@@ -131,13 +147,12 @@ Parameters: {params}
 
 Respond with only the tool name to use."""
         
-        logger.debug(f"Using LLM to route task '{task}' to appropriate tool")
         tool_name = self.llm.invoke(prompt).strip()
-        logger.debug(f"LLM suggested tool: {tool_name}")
+        logger.debug(f"LLM routed task '{task}' -> tool '{tool_name}'")
         
         if tool_name in self.tools:
             return self._call_tool(tool_name, params)
-        else:
-            logger.warning(f"LLM suggested unknown tool '{tool_name}'")
-            return {"error": f"LLM suggested unknown tool '{tool_name}'"}
+        
+        logger.warning(f"LLM suggested unknown tool '{tool_name}'")
+        return {"error": f"LLM suggested unknown tool '{tool_name}'"}
 

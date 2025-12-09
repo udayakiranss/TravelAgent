@@ -4,23 +4,24 @@
 
 The travel booking system includes a comprehensive logging system that supports:
 - **Multiple output destinations**: stdout, file, or both
-- **Session tracking**: Unique session IDs for request correlation
+- **Per-request traceability**: Unique request IDs for correlating all logs within an HTTP request
 - **Detailed context**: Filename, line number, function name in every log entry
 - **Method entry/exit logging**: Automatic tracking of method calls
 - **Configurable levels**: DEBUG (all methods) and INFO (critical methods only)
 
 ## Features
 
-### 1. Session Management
-- Each execution session gets a unique session ID (UUID)
-- Session ID is included in all log entries for correlation
-- Session IDs are displayed in shortened format (first 8 characters)
+### 1. Request ID Tracking (Per-Request Traceability)
+- Each HTTP request gets a unique request ID (from `X-Request-ID` header or auto-generated UUID)
+- Request ID is included in all log entries for correlation
+- Uses Python's `contextvars` for async-safe per-request tracking
+- Request IDs are displayed in shortened format (first 8 characters) or special names (`STARTUP`, `SHUTDOWN`)
 
 ### 2. Log Format
 Every log entry includes:
 - **Timestamp**: Precise timestamp with milliseconds
 - **Level**: DEBUG, INFO, WARNING, ERROR, CRITICAL
-- **Session ID**: Unique identifier for the session
+- **Request ID**: Unique identifier for the HTTP request (enables per-request tracing)
 - **Filename**: Source file name
 - **Line Number**: Exact line where log was generated
 - **Function Name**: Function/method that generated the log
@@ -28,8 +29,14 @@ Every log entry includes:
 
 Example format:
 ```
-2025-11-29 19:30:01.630 | INFO     | [c00df5bd] | orchestrator.py:52 | run_intent | Running intent: {'needs': ['flight']}
+2025-12-08 12:03:18.694 | INFO     | [a1b2c3d4] | orchestrator.py:52 | run_intent | Running intent: {'needs': ['flight']}
+2025-12-08 12:03:18.695 | INFO     | [STARTUP]  | main_web.py:47 | lifespan | Starting Travel Booking API...
 ```
+
+Special request IDs:
+- `STARTUP` - Application startup logs
+- `SHUTDOWN` - Application shutdown logs
+- `NO-REQ-ID` - Logs outside of request context (background tasks, etc.)
 
 ### 3. Method Entry/Exit Logging
 
@@ -186,27 +193,33 @@ When file output is enabled:
 - Or use custom name via `LOG_FILE` environment variable
 - Files are appended to (not overwritten)
 
-## Session Tracking
+## Request ID Tracking
 
-Sessions are automatically managed:
-- New session created at application start
-- Session ID persists throughout execution
-- All logs in a session share the same session ID
-- Useful for correlating logs across multiple requests
+Request IDs are automatically managed per HTTP request:
+- Each request gets a unique ID from `X-Request-ID` header or auto-generated
+- Request ID is set in `get_context()` FastAPI dependency
+- All logs within a request share the same request ID
+- Uses `contextvars` for async-safe isolation between concurrent requests
 
 ```python
 from utils.logger import SessionContext
 
-# Create new session
-session_id = SessionContext.new_session()
-print(f"Session ID: {session_id}")
+# Set request ID (done automatically in get_context dependency)
+SessionContext.set_session_id("custom-request-id")
 
-# Get current session ID
+# Get current request ID
 current_id = SessionContext.get_session_id()
 
-# Set custom session ID
-SessionContext.set_session_id("custom-session-123")
+# For CLI applications, create a session
+session_id = SessionContext.new_session()
+print(f"Request ID: {session_id[:8]}")
 ```
+
+### How it works
+1. FastAPI `get_context()` dependency extracts/generates request ID
+2. `SessionContext.set_session_id(request_id)` stores it in a `ContextVar`
+3. All subsequent logs in that async context include the request ID
+4. Concurrent requests are isolated via Python's contextvars mechanism
 
 ## Integration Points
 
@@ -250,9 +263,10 @@ The logger is integrated into:
 - Increase log level (INFO instead of DEBUG)
 - Remove `@log_method_entry_exit(level="DEBUG")` decorators
 
-### Missing session IDs
-- Ensure `SessionContext.new_session()` is called
-- Check that session ID is set before logging
+### Missing request IDs (showing NO-REQ-ID)
+- For web API: Logs should automatically have request IDs via `get_context()` dependency
+- For CLI: Call `SessionContext.new_session()` at start
+- Check that request ID is set before logging in custom code
 
 ### File not created
 - Check `LOG_DIR` directory exists and is writable

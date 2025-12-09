@@ -1,186 +1,347 @@
 # itinerary_agent.py
-# Itinerary management agent with multiple tools
-from typing import Dict, Any, List
+# Itinerary management agent with database persistence via TravelContext
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from langchain.tools import tool
 from agents.base_agent import BaseAgent
 from utils.logger import get_logger, log_method_entry_exit
 
+if TYPE_CHECKING:
+    from api.context import TravelContext
+    from database.models import Itinerary
+
 logger = get_logger()
 
 
-# In-memory storage for itineraries (in production, use a database)
-_ITINERARIES = {}
+# =============================================================================
+# Helper function for database operations
+# =============================================================================
 
+def _get_repository(session):
+    """Get repository from session."""
+    from database.repository import TravelItineraryRepository
+    return TravelItineraryRepository(session)
+
+
+def _itinerary_to_dict(itinerary: "Itinerary") -> Dict[str, Any]:
+    """Convert database Itinerary model to dictionary format."""
+    return {
+        "itinerary_id": itinerary.id,
+        "traveler_id": itinerary.traveler_id,
+        "flight_reservation": itinerary.flight_reservation,
+        "hotel_reservation": itinerary.hotel_reservation,
+        "car_reservation": itinerary.car_reservation,
+        "total_cost": itinerary.total_cost,
+        "status": itinerary.status,
+        "version": itinerary.version,
+        "original_query": itinerary.original_query,
+        "created_at": itinerary.created_at.isoformat() if itinerary.created_at else None,
+        "updated_at": itinerary.updated_at.isoformat() if itinerary.updated_at else None,
+    }
+
+
+# =============================================================================
+# Tool Functions (for LangChain compatibility)
+# =============================================================================
 
 @tool
 def build_itinerary_tool(query: Dict[str, Any]) -> Dict[str, Any]:
-    """Build a new itinerary from flight, hotel, and car bookings. Returns itinerary details."""
-    itinerary_id = query.get('itinerary_id', f"ITIN-{len(_ITINERARIES) + 1}")
-    flight_booking = query.get('flight_booking')
-    hotel_booking = query.get('hotel_booking')
-    car_booking = query.get('car_booking')
-    traveler_name = query.get('traveler_name', 'Guest')
-    
-    logger.debug(f"Building itinerary: id={itinerary_id}, traveler={traveler_name}, has_flight={flight_booking is not None}, has_hotel={hotel_booking is not None}, has_car={car_booking is not None}")
-    
-    itinerary = {
-        "itinerary_id": itinerary_id,
-        "traveler": traveler_name,
-        "flight": flight_booking,
-        "hotel": hotel_booking,
-        "car": car_booking,
-        "total_cost": 0,
-        "status": "draft"
-    }
-    
-    # Calculate total cost
-    if flight_booking and isinstance(flight_booking, dict):
-        itinerary["total_cost"] += flight_booking.get('total_price', flight_booking.get('price', 0))
-    if hotel_booking and isinstance(hotel_booking, dict):
-        itinerary["total_cost"] += hotel_booking.get('total_price', hotel_booking.get('price', 0))
-    if car_booking and isinstance(car_booking, dict):
-        itinerary["total_cost"] += car_booking.get('total_price', car_booking.get('price', 0))
-    
-    _ITINERARIES[itinerary_id] = itinerary
-    
-    logger.info(f"Itinerary built: {itinerary_id}, total_cost=${itinerary['total_cost']}")
-    return itinerary
-
-
-@tool
-def update_itinerary_tool(query: Dict[str, Any]) -> Dict[str, Any]:
-    """Update an existing itinerary. Returns updated itinerary."""
-    itinerary_id = query.get('itinerary_id')
-    
-    logger.debug(f"Updating itinerary: id={itinerary_id}")
-    
-    if not itinerary_id:
-        logger.warning("Itinerary ID is required for update")
-        return {"error": "Itinerary ID is required"}
-    
-    if itinerary_id not in _ITINERARIES:
-        logger.warning(f"Itinerary {itinerary_id} not found")
-        return {"error": f"Itinerary {itinerary_id} not found"}
-    
-    itinerary = _ITINERARIES[itinerary_id]
-    
-    # Update fields
-    updates = []
-    if 'flight_booking' in query:
-        itinerary['flight'] = query['flight_booking']
-        updates.append('flight')
-    if 'hotel_booking' in query:
-        itinerary['hotel'] = query['hotel_booking']
-        updates.append('hotel')
-    if 'car_booking' in query:
-        itinerary['car'] = query['car_booking']
-        updates.append('car')
-    if 'status' in query:
-        itinerary['status'] = query['status']
-        updates.append('status')
-    
-    logger.debug(f"Updated fields: {updates}")
-    
-    # Recalculate total cost
-    itinerary['total_cost'] = 0
-    if itinerary.get('flight') and isinstance(itinerary['flight'], dict):
-        itinerary['total_cost'] += itinerary['flight'].get('total_price', itinerary['flight'].get('price', 0))
-    if itinerary.get('hotel') and isinstance(itinerary['hotel'], dict):
-        itinerary['total_cost'] += itinerary['hotel'].get('total_price', itinerary['hotel'].get('price', 0))
-    if itinerary.get('car') and isinstance(itinerary['car'], dict):
-        itinerary['total_cost'] += itinerary['car'].get('total_price', itinerary['car'].get('price', 0))
-    
-    logger.info(f"Itinerary updated: {itinerary_id}, new_total_cost=${itinerary['total_cost']}")
-    return itinerary
+    """Build a new itinerary from flight, hotel, and car reservations. Returns itinerary details."""
+    # This tool is primarily for LLM-based workflows
+    # For context-aware operations, use ItineraryAgent.build() directly
+    return {"info": "Use ItineraryAgent.build() with TravelContext for database operations"}
 
 
 @tool
 def get_itinerary_tool(query: Dict[str, Any]) -> Dict[str, Any]:
     """Get itinerary details by ID. Returns itinerary information."""
-    itinerary_id = query.get('itinerary_id')
-    
-    logger.debug(f"Getting itinerary: id={itinerary_id}")
-    
-    if not itinerary_id:
-        logger.warning("Itinerary ID is required")
-        return {"error": "Itinerary ID is required"}
-    
-    if itinerary_id not in _ITINERARIES:
-        logger.warning(f"Itinerary {itinerary_id} not found")
-        return {"error": f"Itinerary {itinerary_id} not found"}
-    
-    itinerary = _ITINERARIES[itinerary_id]
-    logger.debug(f"Retrieved itinerary {itinerary_id} for traveler {itinerary.get('traveler', 'Unknown')}")
-    return itinerary
+    return {"info": "Use ItineraryAgent.get() with TravelContext for database operations"}
 
 
 @tool
-def list_itineraries_tool(query: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """List all itineraries. Returns list of itinerary summaries."""
-    traveler_name = query.get('traveler_name')
-    
-    logger.debug(f"Listing itineraries: traveler_filter={traveler_name or 'all'}")
-    
-    if traveler_name:
-        # Filter by traveler name
-        filtered = [
-            {k: v for k, v in it.items() if k != 'flight' and k != 'hotel' and k != 'car'}
-            for it in _ITINERARIES.values()
-            if it.get('traveler') == traveler_name
-        ]
-        logger.info(f"Found {len(filtered)} itineraries for traveler {traveler_name}")
-        return filtered
-    else:
-        # Return all itinerary summaries
-        all_itineraries = [
-            {k: v for k, v in it.items() if k != 'flight' and k != 'hotel' and k != 'car'}
-            for it in _ITINERARIES.values()
-        ]
-        logger.info(f"Found {len(all_itineraries)} total itineraries")
-        return all_itineraries
+def list_itineraries_tool(query: Dict[str, Any]) -> Dict[str, Any]:
+    """List all itineraries. Returns dict with items, total, page, limit, and has_more."""
+    return {"info": "Use ItineraryAgent.list_all() with TravelContext for database operations"}
 
+
+# =============================================================================
+# Itinerary Agent Class
+# =============================================================================
 
 class ItineraryAgent(BaseAgent):
-    """Agent specialized in itinerary management"""
+    """
+    Agent specialized in itinerary management.
+    Uses database persistence via TravelContext.session.
+    """
     
     def __init__(self, llm=None):
+        """
+        Initialize the itinerary agent.
+        
+        Args:
+            llm: Optional LLM provider for intelligent routing
+        """
         super().__init__(llm=llm, name="ItineraryAgent")
     
     def _initialize_tools(self) -> Dict[str, Any]:
         """Initialize itinerary management tools"""
         return {
             'build_itinerary': build_itinerary_tool,
-            'update_itinerary': update_itinerary_tool,
             'get_itinerary': get_itinerary_tool,
             'list_itineraries': list_itineraries_tool,
         }
     
+    # =========================================================================
+    # Context-Aware Operations
+    # =========================================================================
+    
     @log_method_entry_exit(level="DEBUG")
-    def execute(self, task: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute itinerary management task"""
-        logger.debug(f"ItineraryAgent executing task: {task} with params: {params}")
-        if task in self.tools:
-            result = self._call_tool(task, params)
-            logger.debug(f"Task '{task}' completed successfully")
-            return result
+    def build(
+        self,
+        flight_reservation: Optional[Dict[str, Any]],
+        hotel_reservation: Optional[Dict[str, Any]],
+        car_reservation: Optional[Dict[str, Any]],
+        ctx: "TravelContext"
+    ) -> "Itinerary":
+        """
+        Build a new itinerary with the given reservations.
+        
+        Args:
+            flight_reservation: Selected flight data
+            hotel_reservation: Selected hotel data
+            car_reservation: Selected car data
+            ctx: TravelContext with session and traveler_id
+        
+        Returns:
+            Created Itinerary instance
+        """
+        logger.info(f"Building itinerary for traveler: {ctx.traveler_id}")
+        
+        repo = _get_repository(ctx.session)
+        
+        itinerary = repo.create(
+            traveler_id=ctx.traveler_id,
+            original_query=ctx.original_query,
+            flight_reservation=flight_reservation,
+            hotel_reservation=hotel_reservation,
+            car_reservation=car_reservation,
+        )
+        
+        logger.info(f"Created itinerary: id={itinerary.id}, total_cost=${itinerary.total_cost}")
+        return itinerary
+    
+    @log_method_entry_exit(level="DEBUG")
+    def get(self, ctx: "TravelContext") -> Optional["Itinerary"]:
+        """
+        Get itinerary by ID from context.
+        
+        Args:
+            ctx: TravelContext with session and itinerary_id
+        
+        Returns:
+            Itinerary instance or None if not found
+        """
+        if not ctx.itinerary_id:
+            logger.warning("No itinerary_id in context")
+            return None
+        
+        repo = _get_repository(ctx.session)
+        itinerary = repo.get_by_id(ctx.itinerary_id)
+        
+        if itinerary:
+            logger.debug(f"Retrieved itinerary: id={ctx.itinerary_id}")
         else:
-            # Use LLM to determine which tool to use if task is ambiguous
-            if self.llm:
-                logger.debug(f"Task '{task}' not found in tools, using LLM routing")
-                return self._llm_route_task(task, params)
-            else:
-                logger.warning(f"Unknown task '{task}' for ItineraryAgent and no LLM available")
-                return {"error": f"Unknown task '{task}' for ItineraryAgent"}
+            logger.warning(f"Itinerary not found: id={ctx.itinerary_id}")
+        
+        return itinerary
+    
+    @log_method_entry_exit(level="DEBUG")
+    def update(
+        self,
+        ctx: "TravelContext",
+        flight_reservation: Optional[Dict[str, Any]] = ...,
+        hotel_reservation: Optional[Dict[str, Any]] = ...,
+        car_reservation: Optional[Dict[str, Any]] = ...,
+    ) -> "Itinerary":
+        """
+        Update itinerary with new reservations.
+        
+        Args:
+            ctx: TravelContext with session, itinerary_id, and current itinerary
+            flight_reservation: New flight data (... to keep existing, None to clear)
+            hotel_reservation: New hotel data (... to keep existing, None to clear)
+            car_reservation: New car data (... to keep existing, None to clear)
+        
+        Returns:
+            Updated Itinerary instance
+        """
+        if not ctx.itinerary_id or not ctx.itinerary:
+            raise ValueError("Context must have itinerary_id and itinerary loaded")
+        
+        repo = _get_repository(ctx.session)
+        
+        itinerary = repo.update(
+            itinerary_id=ctx.itinerary_id,
+            version=ctx.itinerary.version,
+            flight_reservation=flight_reservation,
+            hotel_reservation=hotel_reservation,
+            car_reservation=car_reservation,
+        )
+        
+        logger.info(f"Updated itinerary: id={itinerary.id}, new_version={itinerary.version}")
+        return itinerary
+    
+    @log_method_entry_exit(level="DEBUG")
+    def confirm(self, ctx: "TravelContext") -> "Itinerary":
+        """
+        Confirm a draft itinerary.
+        
+        Args:
+            ctx: TravelContext with session and itinerary_id
+        
+        Returns:
+            Confirmed Itinerary instance
+        """
+        if not ctx.itinerary_id:
+            raise ValueError("Context must have itinerary_id")
+        
+        repo = _get_repository(ctx.session)
+        itinerary = repo.confirm(ctx.itinerary_id)
+        
+        logger.info(f"Confirmed itinerary: id={itinerary.id}")
+        return itinerary
+    
+    @log_method_entry_exit(level="DEBUG")
+    def cancel(self, ctx: "TravelContext") -> "Itinerary":
+        """
+        Cancel an itinerary.
+        
+        Args:
+            ctx: TravelContext with session and itinerary_id
+        
+        Returns:
+            Cancelled Itinerary instance
+        """
+        if not ctx.itinerary_id:
+            raise ValueError("Context must have itinerary_id")
+        
+        repo = _get_repository(ctx.session)
+        itinerary = repo.cancel(ctx.itinerary_id)
+        
+        logger.info(f"Cancelled itinerary: id={itinerary.id}")
+        return itinerary
+    
+    @log_method_entry_exit(level="DEBUG")
+    def delete(self, ctx: "TravelContext") -> bool:
+        """
+        Delete a draft itinerary.
+        
+        Args:
+            ctx: TravelContext with session and itinerary_id
+        
+        Returns:
+            True if deleted successfully
+        """
+        if not ctx.itinerary_id:
+            raise ValueError("Context must have itinerary_id")
+        
+        repo = _get_repository(ctx.session)
+        result = repo.delete(ctx.itinerary_id)
+        
+        logger.info(f"Deleted itinerary: id={ctx.itinerary_id}")
+        return result
+    
+    @log_method_entry_exit(level="DEBUG")
+    def list_all(
+        self,
+        ctx: "TravelContext",
+        status: Optional[str] = None,
+        page: int = 1,
+        limit: int = 20,
+    ) -> tuple[List["Itinerary"], int]:
+        """
+        List itineraries with optional filtering.
+        
+        Args:
+            ctx: TravelContext with session
+            status: Filter by status
+            page: Page number
+            limit: Items per page
+        
+        Returns:
+            Tuple of (list of itineraries, total count)
+        """
+        repo = _get_repository(ctx.session)
+        
+        itineraries, total = repo.list_all(
+            status=status,
+            traveler_id=ctx.traveler_id if ctx.traveler_id else None,
+            page=page,
+            limit=limit,
+        )
+        
+        logger.info(f"Listed itineraries: {len(itineraries)} of {total} total")
+        return itineraries, total
+    
+    # =========================================================================
+    # Legacy Execute Method (for backward compatibility)
+    # =========================================================================
+    
+    @log_method_entry_exit(level="DEBUG")
+    def execute(self, task: str, params: Dict[str, Any], ctx: Optional["TravelContext"] = None) -> Any:
+        """
+        Execute itinerary management task.
+        
+        For context-aware operations, use the specific methods (build, get, update, etc.) directly.
+        
+        Args:
+            task: Task name to execute
+            params: Task parameters
+            ctx: Optional TravelContext
+        
+        Returns:
+            Task result
+        """
+        logger.debug(f"ItineraryAgent executing task: {task}")
+        
+        # Context-aware operations
+        if ctx is not None:
+            if task == 'build_itinerary':
+                return self.build(
+                    flight_reservation=params.get('flight_reservation'),
+                    hotel_reservation=params.get('hotel_reservation'),
+                    car_reservation=params.get('car_reservation'),
+                    ctx=ctx
+                )
+            elif task == 'get_itinerary':
+                return self.get(ctx)
+            elif task == 'confirm_itinerary':
+                return self.confirm(ctx)
+            elif task == 'cancel_itinerary':
+                return self.cancel(ctx)
+        
+        # Fallback for tool-based execution
+        if task in self.tools:
+            return self._call_tool(task, params)
+        
+        # Use LLM routing if available
+        if self.llm:
+            logger.debug(f"Task '{task}' not found, using LLM routing")
+            return self._llm_route_task(task, params)
+        
+        logger.warning(f"Unknown task '{task}' for ItineraryAgent")
+        return {"error": f"Unknown task '{task}' for ItineraryAgent"}
     
     @log_method_entry_exit(level="DEBUG")
     def _llm_route_task(self, task: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Use LLM to route ambiguous tasks to appropriate tools"""
+        display_params = {k: v for k, v in params.items() if not k.startswith('_')}
+        
         available_tools = ", ".join(self.get_available_tools())
         prompt = f"""You are an Itinerary Management Agent. Based on the task and parameters, determine which tool to use.
 
 Available tools: {available_tools}
 Task: {task}
-Parameters: {params}
+Parameters: {display_params}
 
 Respond with only the tool name to use."""
         
@@ -194,3 +355,11 @@ Respond with only the tool name to use."""
             logger.warning(f"LLM suggested unknown tool '{tool_name}'")
             return {"error": f"LLM suggested unknown tool '{tool_name}'"}
 
+
+# =============================================================================
+# Utility function for converting itinerary to dict
+# =============================================================================
+
+def itinerary_to_dict(itinerary: "Itinerary") -> Dict[str, Any]:
+    """Public helper to convert Itinerary model to dictionary."""
+    return _itinerary_to_dict(itinerary)
