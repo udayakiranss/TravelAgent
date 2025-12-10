@@ -7,7 +7,7 @@ Business logic lives in Orchestrator and Agents (per DD-1, DD-2).
 """
 import os
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session
@@ -20,6 +20,10 @@ from api.schemas import (
     ItineraryUpdateRequest,
     NaturalLanguageQueryRequest,
     NaturalLanguageModifyRequest,
+    UserPreferencesCreateRequest,
+    FlightSearchRequest,
+    HotelSearchRequest,
+    CarSearchRequest,
     # Response models
     ItineraryResponse,
     ItineraryListResponse,
@@ -28,20 +32,31 @@ from api.schemas import (
     PlanResponse,
     ModifyResponse,
     HealthResponse,
+    UserPreferencesResponse,
+    UserPreferencesDeleteResponse,
+    ChatHistoryResponse,
+    FlightOption,
+    HotelOption,
+    CarOption,
 )
 from api.dependencies import get_db, get_llm, get_context, get_orchestrator
 from database.repository import (
     TravelItineraryRepository,
     ChatMessageRepository,
+    UserPreferencesRepository,
     ItineraryNotFoundError,
     VersionConflictError,
     InvalidStatusTransitionError,
     LLMUnavailableError,
+    PreferencesNotFoundError,
 )
 from database.models import Itinerary
 from agents.llm_provider import LLMProvider
 from agents.orchestrator import Orchestrator
 from utils.logger import get_logger
+from tools.search_tools import search_flights as tool_search_flights
+from tools.search_tools import search_hotels as tool_search_hotels
+from tools.search_tools import search_cars as tool_search_cars
 
 # Initialize logger
 logger = get_logger()
@@ -180,6 +195,73 @@ def health_check(
 
 
 # =============================================================================
+# Search Operations (New)
+# =============================================================================
+
+@router.post(
+    "/search/flights",
+    response_model=List[Dict[str, Any]],
+    summary="Search flights",
+    description="Search for available flights. Use airport codes (BLR, DXB) and dates (YYYY-MM-DD)."
+)
+def search_flights(request: FlightSearchRequest):
+    """Search for flights without creating an itinerary."""
+    logger.info(f"Searching flights: {request.origin} -> {request.destination} on {request.date}")
+    try:
+        # LangChain tool expects {"query": {...}} format
+        results = tool_search_flights.invoke({
+            "query": {
+                "from": request.origin,
+                "to": request.destination,
+                "date": request.date
+            }
+        })
+        logger.info(f"Flight search returned {len(results)} results")
+        return results
+    except Exception as e:
+        logger.error(f"Flight search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/search/hotels",
+    response_model=List[Dict[str, Any]],
+    summary="Search hotels",
+    description="Search for available hotels. Use city codes (DXB, LON, NYC)."
+)
+def search_hotels(request: HotelSearchRequest):
+    """Search for hotels without creating an itinerary."""
+    logger.info(f"Searching hotels in: {request.city}")
+    try:
+        # LangChain tool expects {"query": {...}} format
+        results = tool_search_hotels.invoke({"query": {"city": request.city}})
+        logger.info(f"Hotel search returned {len(results)} results")
+        return results
+    except Exception as e:
+        logger.error(f"Hotel search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/search/cars",
+    response_model=List[Dict[str, Any]],
+    summary="Search cars",
+    description="Search for available car rentals. Use city codes (DXB, LON, NYC)."
+)
+def search_cars(request: CarSearchRequest):
+    """Search for car rentals without creating an itinerary."""
+    logger.info(f"Searching cars in: {request.city}")
+    try:
+        # LangChain tool expects {"query": {...}} format
+        results = tool_search_cars.invoke({"query": {"city": request.city}})
+        logger.info(f"Car search returned {len(results)} results")
+        return results
+    except Exception as e:
+        logger.error(f"Car search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
 # Itinerary CRUD Operations
 # =============================================================================
 
@@ -265,6 +347,37 @@ def get_itinerary(
         return itinerary_to_response(itinerary)
     except ItineraryNotFoundError as e:
         handle_domain_exception(e)
+
+
+@router.get(
+    "/itineraries/{itinerary_id}/history",
+    response_model=ChatHistoryResponse,
+    summary="Get chat history",
+    description="Get chat history for an itinerary"
+)
+def get_itinerary_history(
+    itinerary_id: str,
+    limit: int = Query(20, ge=1, le=100, description="Number of messages to return"),
+    db: Session = Depends(get_db),
+):
+    """Get chat history for an itinerary."""
+    logger.debug(f"Getting history for itinerary id={itinerary_id}")
+    
+    # Check if itinerary exists first
+    repo = TravelItineraryRepository(db)
+    if not repo.get_by_id(itinerary_id):
+        raise HTTPException(
+            status_code=404,
+            detail=create_error_response("ITINERARY_NOT_FOUND", f"Itinerary {itinerary_id} not found", 404)
+        )
+    
+    chat_repo = ChatMessageRepository(db)
+    messages = chat_repo.get_history(itinerary_id, limit=limit)
+    
+    return ChatHistoryResponse(
+        itinerary_id=itinerary_id,
+        messages=messages
+    )
 
 
 @router.put(
@@ -446,6 +559,7 @@ def plan_trip(
             hotel_reservation=result["hotel_reservation"],
             car_reservation=result["car_reservation"],
             selection_criteria_used=result["selection_criteria_used"],
+            preference_summary=result.get("preference_summary"),
             summary=result["summary"],
             query=request.query
         )
@@ -534,3 +648,147 @@ def modify_itinerary_nl(
                 500
             )
         )
+
+
+# =============================================================================
+# User Preferences CRUD Operations
+# =============================================================================
+
+@router.get(
+    "/preferences/{traveler_id}",
+    response_model=UserPreferencesResponse,
+    summary="Get user preferences",
+    description="Get user preferences by traveler ID"
+)
+def get_preferences(
+    traveler_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get user preferences by traveler ID."""
+    logger.debug(f"Getting preferences for traveler_id={traveler_id}")
+    
+    repo = UserPreferencesRepository(db)
+    
+    try:
+        preferences = repo.get_by_id_or_raise(traveler_id)
+        return UserPreferencesResponse(
+            traveler_id=preferences.traveler_id,
+            flight_preferences=preferences.flight_preferences,
+            hotel_preferences=preferences.hotel_preferences,
+            car_preferences=preferences.car_preferences,
+            budget_range=preferences.budget_range,
+            dietary_restrictions=preferences.dietary_restrictions,
+            accessibility_needs=preferences.accessibility_needs,
+            loyalty_programs=preferences.loyalty_programs,
+            past_bookings_summary=preferences.past_bookings_summary,
+            summary=preferences.generate_summary(),
+            created_at=preferences.created_at,
+            updated_at=preferences.updated_at,
+        )
+    except PreferencesNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=create_error_response(
+                "PREFERENCES_NOT_FOUND",
+                f"Preferences not found for traveler '{traveler_id}'",
+                404
+            )
+        )
+
+
+@router.put(
+    "/preferences/{traveler_id}",
+    response_model=UserPreferencesResponse,
+    summary="Create or update preferences",
+    description="Create or update user preferences (upsert)"
+)
+def upsert_preferences(
+    traveler_id: str,
+    request: UserPreferencesCreateRequest,
+    db: Session = Depends(get_db),
+):
+    """Create or update user preferences."""
+    logger.info(f"Upserting preferences for traveler_id={traveler_id}")
+    
+    repo = UserPreferencesRepository(db)
+    
+    # Convert Pydantic models to dicts
+    preferences = repo.upsert(
+        traveler_id=traveler_id,
+        flight_preferences=request.flight_preferences.model_dump() if request.flight_preferences else None,
+        hotel_preferences=request.hotel_preferences.model_dump() if request.hotel_preferences else None,
+        car_preferences=request.car_preferences.model_dump() if request.car_preferences else None,
+        budget_range=request.budget_range.model_dump() if request.budget_range else None,
+        dietary_restrictions=request.dietary_restrictions,
+        accessibility_needs=request.accessibility_needs,
+        loyalty_programs=[lp.model_dump() for lp in request.loyalty_programs] if request.loyalty_programs else None,
+        past_bookings_summary=request.past_bookings_summary,
+    )
+    
+    logger.info(f"Upserted preferences for traveler_id={traveler_id}")
+    
+    return UserPreferencesResponse(
+        traveler_id=preferences.traveler_id,
+        flight_preferences=preferences.flight_preferences,
+        hotel_preferences=preferences.hotel_preferences,
+        car_preferences=preferences.car_preferences,
+        budget_range=preferences.budget_range,
+        dietary_restrictions=preferences.dietary_restrictions,
+        accessibility_needs=preferences.accessibility_needs,
+        loyalty_programs=preferences.loyalty_programs,
+        past_bookings_summary=preferences.past_bookings_summary,
+        summary=preferences.generate_summary(),
+        created_at=preferences.created_at,
+        updated_at=preferences.updated_at,
+    )
+
+
+@router.delete(
+    "/preferences/{traveler_id}",
+    response_model=UserPreferencesDeleteResponse,
+    summary="Delete preferences",
+    description="Delete user preferences"
+)
+def delete_preferences(
+    traveler_id: str,
+    db: Session = Depends(get_db),
+):
+    """Delete user preferences."""
+    logger.info(f"Deleting preferences for traveler_id={traveler_id}")
+    
+    repo = UserPreferencesRepository(db)
+    
+    try:
+        repo.delete(traveler_id)
+        return UserPreferencesDeleteResponse(
+            success=True,
+            message=f"Preferences for traveler '{traveler_id}' deleted successfully"
+        )
+    except PreferencesNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=create_error_response(
+                "PREFERENCES_NOT_FOUND",
+                f"Preferences not found for traveler '{traveler_id}'",
+                404
+            )
+        )
+
+
+@router.get(
+    "/preferences/{traveler_id}/summary",
+    summary="Get preference summary",
+    description="Get compact preference summary for a traveler (~50 tokens)"
+)
+def get_preference_summary(
+    traveler_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get preference summary for a traveler (fast endpoint for prompts)."""
+    repo = UserPreferencesRepository(db)
+    summary = repo.get_summary(traveler_id)
+    
+    return {
+        "traveler_id": traveler_id,
+        "summary": summary
+    }

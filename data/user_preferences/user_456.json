@@ -1,0 +1,41 @@
+{
+  "traveler_id": "user_456",
+  "flight_preferences": {
+    "seat_type": "window",
+    "cabin_class": "business",
+    "preferred_airlines": ["Emirates", "British Airways", "Emirates"]
+  },
+  "hotel_preferences": {
+    "min_rating": 5,
+    "room_type": "suite",
+    "amenities": ["wifi", "spa", "pool", "room_service"],
+    "preferred_chains": ["Four Seasons", "Ritz-Carlton"]
+  },
+  "car_preferences": {
+    "car_type": "luxury",
+    "features": ["gps", "leather_seats", "premium_audio"],
+    "preferred_companies": ["Avis", "National"]
+  },
+  "budget_range": {
+    "min": 5000,
+    "max": 15000,
+    "currency": "USD"
+  },
+  "dietary_restrictions": ["gluten-free"],
+  "accessibility_needs": ["wheelchair_accessible"],
+  "loyalty_programs": [
+    {
+      "program": "British Airways Executive Club",
+      "number": "BA12345678",
+      "tier": "Gold"
+    }
+  ],
+  "past_bookings_summary": {
+    "total_trips": 45,
+    "avg_hotel_rating": 4.8,
+    "preferred_destinations": ["DXB", "LON", "PAR", "TYO"],
+    "avg_trip_cost": 8500
+  },
+  "summary": "Prefers: flights: business, window seat; hotels: 5+ star; cars: luxury; budget: USD 5000-15000",
+  "cached_at": "2025-01-01T00:00:00+00:00"
+}
