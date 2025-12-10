@@ -5,7 +5,7 @@ This context object flows through Routes → Orchestrator → Agents.
 Repositories only receive ctx.session (context-unaware).
 """
 from dataclasses import dataclass, field
-from typing import Optional, List, Any, TYPE_CHECKING
+from typing import Optional, List, Any, Dict, TYPE_CHECKING
 from uuid import uuid4
 
 from sqlmodel import Session
@@ -54,6 +54,12 @@ class TravelContext:
     
     chat_history: List["ChatHistory"] = field(default_factory=list)
     """Recent chat messages for conversation context."""
+    
+    preference_summary: Optional[str] = None
+    """Compact preference summary (~50 tokens) loaded during plan_trip."""
+    
+    full_preferences: Optional[Dict[str, Any]] = None
+    """Full preferences loaded via tool call (only in tool_binding mode)."""
     
     # === Computed Properties ===
     @property

@@ -2,18 +2,20 @@
 # Orchestrator that coordinates agents to handle user intents
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 import json
+import time
 
 from agents.planner import plan_trip
-from agents.llm_provider import LLMProvider, create_llm_provider
+from agents.llm_provider import LLMProvider, create_llm_provider, extract_token_usage
 from agents.flight_booking_agent import FlightBookingAgent
 from agents.hotel_booking_agent import HotelBookingAgent
 from agents.car_rental_agent import CarRentalAgent
 from agents.itinerary_agent import ItineraryAgent
 from agents.payment_agent import PaymentAgent
 from agents.response_formatter import ResponseFormatter
-from api.config import SelectionCriteria
-from database.repository import LLMUnavailableError
-from utils.logger import get_logger, log_critical_entry_exit, log_method_entry_exit
+from api.config import SelectionCriteria, PreferenceLoadingMode, PREFERENCE_LOADING_MODE
+from database.repository import LLMUnavailableError, UserPreferencesRepository
+from tools.preference_tools import load_full_preferences
+from utils.logger import get_logger, log_critical_entry_exit, log_method_entry_exit, _format_duration
 
 if TYPE_CHECKING:
     from api.context import TravelContext
@@ -64,6 +66,51 @@ class Orchestrator:
         logger.info(f"Orchestrator initialized with {len(self.agents)} agents")
     
     # =========================================================================
+    # User Preferences Support
+    # =========================================================================
+    
+    def _get_preference_summary(self, ctx: "TravelContext") -> str:
+        """
+        Get user preference summary for prompt inclusion (~50 tokens).
+        
+        Uses filesystem cache for fast reads. Returns default message if
+        no preferences are set for the traveler.
+        
+        Args:
+            ctx: TravelContext with session and traveler_id
+        
+        Returns:
+            Compact preference summary string
+        """
+        if not ctx.traveler_id:
+            return "No traveler ID provided"
+        
+        try:
+            repo = UserPreferencesRepository(ctx.session)
+            summary = repo.get_summary(ctx.traveler_id)
+            logger.debug(f"Preference summary for {ctx.traveler_id}: {summary}")
+            return summary
+        except Exception as e:
+            logger.warning(f"Failed to get preference summary for {ctx.traveler_id}: {e}")
+            return "Unable to load preferences"
+    
+    def _execute_preference_tool_call(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute the load_full_preferences tool call.
+        
+        Args:
+            tool_call: Tool call dict with name and args
+        
+        Returns:
+            Full preferences dictionary
+        """
+        traveler_id = tool_call.get("args", {}).get("traveler_id", "")
+        logger.info(f"Executing preference tool call for traveler_id={traveler_id}")
+        
+        # Call the tool function directly
+        return load_full_preferences.invoke({"traveler_id": traveler_id})
+    
+    # =========================================================================
     # Context-Aware High-Level Methods (per DD-1, DD-2)
     # =========================================================================
     
@@ -73,17 +120,32 @@ class Orchestrator:
         
         Parses the query, runs appropriate agents with context-aware selection,
         and creates a draft itinerary.
+        
+        Uses tiered preference loading:
+        - Summary (~50 tokens) is always loaded for basic personalization
+        - Full preferences (~500 tokens) available via tool if model needs them
         """
-        logger.info(f"Planning trip: traveler={ctx.traveler_id}, criteria={ctx.criteria.value}")
+        # Load preference summary (always, fast ~5ms from cache)
+        preference_summary = self._get_preference_summary(ctx)
+        
+        logger.info(f"Planning trip: traveler={ctx.traveler_id}, criteria={ctx.criteria.value}, mode={PREFERENCE_LOADING_MODE.value}, prefs={preference_summary[:50]}...")
         ctx.original_query = query
+        
+        # Store preference summary in context for later use
+        ctx.preference_summary = preference_summary
         
         # Ensure LLM is available for NL parsing
         llm = ctx.llm or self.llm
         if llm is None:
             raise LLMUnavailableError("LLM is required for natural language trip planning")
         
-        # Parse query to intent
-        intent = self._interpret_query(query, llm)
+        # Parse query to intent based on preference loading mode
+        if PREFERENCE_LOADING_MODE == PreferenceLoadingMode.TOOL_BINDING:
+            # Tool binding mode: LLM can call load_full_preferences for detailed prefs
+            intent = self._interpret_query_with_tool_binding(query, llm, preference_summary, ctx)
+        else:
+            # Summary-only mode: just include summary in prompt (default, faster)
+            intent = self._interpret_query_with_preferences(query, llm, preference_summary)
         
         # Run agents with context-aware selection (DD-3: Selection in Agents)
         flight_reservation = None
@@ -151,12 +213,13 @@ class Orchestrator:
         
         if include_summary and llm:
             try:
-                # Prepare results for formatter
+                # Prepare results for formatter (include preference context)
                 results = {
                     "flight": flight_reservation,
                     "hotel": hotel_reservation,
                     "car": car_reservation,
-                    "total_cost": itinerary.total_cost
+                    "total_cost": itinerary.total_cost,
+                    "traveler_preferences": preference_summary,
                 }
                 
                 formatter = ResponseFormatter(llm=llm)
@@ -173,6 +236,7 @@ class Orchestrator:
             "hotel_reservation": hotel_reservation,
             "car_reservation": car_reservation,
             "selection_criteria_used": ctx.criteria.value,
+            "preference_summary": preference_summary,
             "summary": summary,
             "query": query,
         }
@@ -264,8 +328,200 @@ Respond with ONLY the JSON object."""
     # NL Interpretation (DD-1: Moved from main.py)
     # =========================================================================
     
+    def _interpret_query_with_preferences(self, text: str, llm: LLMProvider, preference_summary: str) -> dict:
+        """
+        Use LLM to parse natural language into structured intent, with preference context.
+        
+        Args:
+            text: User's natural language query
+            llm: LLM provider
+            preference_summary: Compact preference summary (~50 tokens)
+        
+        Returns:
+            Structured intent dict
+        """
+        prompt = (
+            "Parse the following user query about travel booking into a structured intent format.\n\n"
+            f'User Query: "{text}"\n\n'
+            f"Traveler Preferences: {preference_summary}\n\n"
+            "Extract the following information:\n"
+            "- needs: List of services needed (flight, hotel, car, itinerary)\n"
+            "- from: Origin airport code (3 letters, uppercase)\n"
+            "- to: Destination airport code (3 letters, uppercase)\n"
+            "- date: Travel date in YYYY-MM-DD format\n\n"
+            "Note: Consider the traveler's preferences when interpreting ambiguous requests.\n"
+            "Return ONLY a valid JSON object with these fields. Example:\n"
+            '{\n'
+            '  "needs": ["flight", "hotel", "car", "itinerary"],\n'
+            '  "from": "NYC",\n'
+            '  "to": "LON",\n'
+            '  "date": "2025-08-12"\n'
+            '}'
+        )
+        
+        try:
+            response = llm.invoke_structured(
+                prompt,
+                response_format={
+                    "type": "object",
+                    "properties": {
+                        "needs": {"type": "array", "items": {"type": "string"}},
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "date": {"type": "string"}
+                    }
+                }
+            )
+            
+            # Handle response format
+            if isinstance(response, dict):
+                if "raw_response" in response:
+                    try:
+                        return json.loads(response["raw_response"])
+                    except Exception:
+                        return self._interpret_rule_based(text)
+                else:
+                    intent = {
+                        "needs": response.get("needs", []),
+                        "from": response.get("from", ""),
+                        "to": response.get("to", ""),
+                        "date": response.get("date", "")
+                    }
+                    return {k: v for k, v in intent.items() if v or k == "needs"}
+            else:
+                return self._interpret_rule_based(text)
+        
+        except Exception as e:
+            logger.warning(f"LLM parsing failed: {e}, falling back to rule-based parser")
+            return self._interpret_rule_based(text)
+    
+    def _interpret_query_with_tool_binding(
+        self, 
+        text: str, 
+        llm: LLMProvider, 
+        preference_summary: str,
+        ctx: "TravelContext"
+    ) -> dict:
+        """
+        Use LLM with tool binding to parse query. LLM can call load_full_preferences
+        if it needs detailed information (loyalty numbers, dietary restrictions, etc.).
+        
+        Args:
+            text: User's natural language query
+            llm: LLM provider
+            preference_summary: Compact preference summary (~50 tokens)
+            ctx: TravelContext for traveler_id
+        
+        Returns:
+            Structured intent dict
+        """
+        logger.info(f"Using tool binding mode for query interpretation")
+        
+        # Bind the preference tool to the LLM
+        try:
+            llm_with_tools = llm.llm.bind_tools([load_full_preferences])
+        except Exception as e:
+            logger.warning(f"Failed to bind tools: {e}, falling back to summary-only mode")
+            return self._interpret_query_with_preferences(text, llm, preference_summary)
+        
+        # Track first LLM call timing
+        start_time = time.perf_counter()
+        logger.info("LLM (tool-binding) call: starting with summary + tool binding")
+        prompt = (
+            "Parse the following user query about travel booking into a structured intent format.\n\n"
+            f'User Query: "{text}"\n\n'
+            f"Traveler ID: {ctx.traveler_id}\n"
+            f"Traveler Preferences Summary: {preference_summary}\n\n"
+            "If you need detailed preferences (loyalty program numbers, dietary restrictions, "
+            "accessibility needs, or past booking patterns), use the load_full_preferences tool.\n\n"
+            "Extract the following information:\n"
+            "- needs: List of services needed (flight, hotel, car, itinerary)\n"
+            "- from: Origin airport code (3 letters, uppercase)\n"
+            "- to: Destination airport code (3 letters, uppercase)\n"
+            "- date: Travel date in YYYY-MM-DD format\n\n"
+            "Return ONLY a valid JSON object with these fields."
+        )
+        
+        try:
+            # First LLM call with tools
+            response = llm_with_tools.invoke(prompt)
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            token_info = extract_token_usage(response)
+            if token_info:
+                logger.info(f"⏱ LLM (tool-binding) call: {_format_duration(duration_ms)} | tokens: {token_info['input']} in, {token_info['output']} out, {token_info['total']} total")
+            else:
+                logger.info(f"⏱ LLM (tool-binding) call: {_format_duration(duration_ms)}")
+            logger.info(f"LLM (tool-binding) call complete in {_format_duration(duration_ms)}")
+            
+            # Check if model called the tool
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                logger.info(f"Model requested {len(response.tool_calls)} tool call(s)")
+                
+                for tool_call in response.tool_calls:
+                    tool_name = tool_call.get('name', tool_call.get('function', {}).get('name', ''))
+                    tool_args = tool_call.get('args', tool_call.get('function', {}).get('arguments', {}))
+                    
+                    if tool_name == 'load_full_preferences':
+                        # Execute the tool
+                        traveler_id = tool_args.get('traveler_id', ctx.traveler_id)
+                        logger.info(f"Executing load_full_preferences for {traveler_id}")
+                        tool_start = time.perf_counter()
+                        
+                        full_prefs = load_full_preferences.invoke({"traveler_id": traveler_id})
+                        tool_duration_ms = (time.perf_counter() - tool_start) * 1000
+                        logger.info(f"Tool load_full_preferences completed in {_format_duration(tool_duration_ms)}")
+                        
+                        # Store full preferences in context
+                        ctx.full_preferences = full_prefs
+                        
+                        # Continue with enriched prompt
+                        enriched_prompt = (
+                            f"{prompt}\n\n"
+                            f"Full Preferences Loaded:\n{json.dumps(full_prefs, indent=2)}"
+                        )
+                        
+                        # Second LLM call with full preferences
+                        logger.info("LLM (tool-binding) enriched call: starting with full preferences")
+                        second_start = time.perf_counter()
+                        response = llm.llm.invoke(enriched_prompt)
+                        second_duration_ms = (time.perf_counter() - second_start) * 1000
+                        token_info = extract_token_usage(response)
+                        if token_info:
+                            logger.info(f"⏱ LLM (tool-binding, enriched) call: {_format_duration(second_duration_ms)} | tokens: {token_info['input']} in, {token_info['output']} out, {token_info['total']} total")
+                        else:
+                            logger.info(f"⏱ LLM (tool-binding, enriched) call: {_format_duration(second_duration_ms)}")
+                        logger.info(f"LLM (tool-binding, enriched) call complete in {_format_duration(second_duration_ms)}")
+            
+            # Parse the response
+            content = response.content if hasattr(response, 'content') else str(response)
+            
+            # Extract JSON from response
+            if "```json" in content:
+                json_start = content.find("```json") + 7
+                json_end = content.find("```", json_start)
+                content = content[json_start:json_end].strip()
+            elif "```" in content:
+                json_start = content.find("```") + 3
+                json_end = content.find("```", json_start)
+                content = content[json_start:json_end].strip()
+            
+            intent = json.loads(content)
+            return {
+                "needs": intent.get("needs", []),
+                "from": intent.get("from", ""),
+                "to": intent.get("to", ""),
+                "date": intent.get("date", "")
+            }
+        
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON parsing failed in tool binding mode: {e}, falling back to rule-based")
+            return self._interpret_rule_based(text)
+        except Exception as e:
+            logger.warning(f"Tool binding mode failed: {e}, falling back to summary-only mode")
+            return self._interpret_query_with_preferences(text, llm, preference_summary)
+    
     def _interpret_query(self, text: str, llm: LLMProvider) -> dict:
-        """Use LLM to parse natural language into structured intent."""
+        """Use LLM to parse natural language into structured intent (legacy, no preferences)."""
         
         prompt = (
             "Parse the following user query about travel booking into a structured intent format.\n\n"

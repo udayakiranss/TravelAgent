@@ -4,11 +4,14 @@ Provides CRUD operations for Itinerary and ChatHistory models.
 """
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
+from pathlib import Path
 import time
+import json
+import os
 from sqlmodel import Session, select
 from sqlalchemy import func
 
-from .models import Itinerary, ChatHistory
+from .models import Itinerary, ChatHistory, UserPreferences
 from utils.logger import get_logger, _format_duration
 
 # Initialize logger
@@ -47,6 +50,13 @@ class LLMUnavailableError(Exception):
     def __init__(self, message: str = "LLM service is not available"):
         self.message = message
         super().__init__(message)
+
+
+class PreferencesNotFoundError(Exception):
+    """Raised when user preferences are not found."""
+    def __init__(self, traveler_id: str):
+        self.traveler_id = traveler_id
+        super().__init__(f"Preferences not found for traveler: {traveler_id}")
 
 
 class TravelItineraryRepository:
@@ -404,6 +414,255 @@ class ChatMessageRepository:
         self.session.commit()
         
         return count
+
+
+# =============================================================================
+# User Preferences Repository
+# =============================================================================
+
+class UserPreferencesRepository:
+    """
+    Repository for UserPreferences CRUD operations with filesystem cache.
+    
+    Uses a write-through cache pattern:
+    - Database is source of truth
+    - Filesystem cache (data/user_preferences/{traveler_id}.json) for fast tool reads
+    - Cache is updated on every write operation
+    """
+    
+    # Cache directory relative to project root
+    CACHE_DIR = Path(__file__).parent.parent / "data" / "user_preferences"
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self._ensure_cache_dir()
+    
+    def _ensure_cache_dir(self):
+        """Ensure the cache directory exists."""
+        self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    
+    def _cache_path(self, traveler_id: str) -> Path:
+        """Get the cache file path for a traveler."""
+        return self.CACHE_DIR / f"{traveler_id}.json"
+    
+    def _write_cache(self, preferences: UserPreferences):
+        """Write preferences to filesystem cache."""
+        cache_path = self._cache_path(preferences.traveler_id)
+        cache_data = {
+            **preferences.to_full_dict(),
+            "summary": preferences.generate_summary(),
+            "cached_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with open(cache_path, "w") as f:
+            json.dump(cache_data, f, indent=2, default=str)
+        logger.debug(f"Cache written: {cache_path}")
+    
+    def _delete_cache(self, traveler_id: str):
+        """Delete cache file for a traveler."""
+        cache_path = self._cache_path(traveler_id)
+        if cache_path.exists():
+            cache_path.unlink()
+            logger.debug(f"Cache deleted: {cache_path}")
+    
+    def _read_cache(self, traveler_id: str) -> Optional[Dict[str, Any]]:
+        """Read preferences from filesystem cache (fast path for tools)."""
+        cache_path = self._cache_path(traveler_id)
+        if cache_path.exists():
+            with open(cache_path) as f:
+                return json.load(f)
+        return None
+    
+    # =========================================================================
+    # Create / Update (Upsert)
+    # =========================================================================
+    
+    def upsert(
+        self,
+        traveler_id: str,
+        flight_preferences: Optional[Dict[str, Any]] = None,
+        hotel_preferences: Optional[Dict[str, Any]] = None,
+        car_preferences: Optional[Dict[str, Any]] = None,
+        budget_range: Optional[Dict[str, Any]] = None,
+        dietary_restrictions: Optional[List[str]] = None,
+        accessibility_needs: Optional[List[str]] = None,
+        loyalty_programs: Optional[List[Dict[str, Any]]] = None,
+        past_bookings_summary: Optional[Dict[str, Any]] = None,
+    ) -> UserPreferences:
+        """
+        Create or update user preferences (upsert).
+        
+        Args:
+            traveler_id: Traveler identifier
+            flight_preferences: Flight preferences dict
+            hotel_preferences: Hotel preferences dict
+            car_preferences: Car preferences dict
+            budget_range: Budget range dict {min, max, currency}
+            dietary_restrictions: List of dietary restrictions
+            accessibility_needs: List of accessibility needs
+            loyalty_programs: List of loyalty program dicts
+            past_bookings_summary: Aggregated booking stats
+        
+        Returns:
+            Created/updated UserPreferences instance
+        """
+        start_time = time.perf_counter()
+        
+        # Check if exists
+        existing = self.session.get(UserPreferences, traveler_id)
+        
+        if existing:
+            # Update existing
+            if flight_preferences is not None:
+                existing.flight_preferences = flight_preferences
+            if hotel_preferences is not None:
+                existing.hotel_preferences = hotel_preferences
+            if car_preferences is not None:
+                existing.car_preferences = car_preferences
+            if budget_range is not None:
+                existing.budget_range = budget_range
+            if dietary_restrictions is not None:
+                existing.dietary_restrictions = dietary_restrictions
+            if accessibility_needs is not None:
+                existing.accessibility_needs = accessibility_needs
+            if loyalty_programs is not None:
+                existing.loyalty_programs = loyalty_programs
+            if past_bookings_summary is not None:
+                existing.past_bookings_summary = past_bookings_summary
+            existing.updated_at = datetime.now(timezone.utc)
+            
+            preferences = existing
+        else:
+            # Create new
+            preferences = UserPreferences(
+                traveler_id=traveler_id,
+                flight_preferences=flight_preferences,
+                hotel_preferences=hotel_preferences,
+                car_preferences=car_preferences,
+                budget_range=budget_range,
+                dietary_restrictions=dietary_restrictions,
+                accessibility_needs=accessibility_needs,
+                loyalty_programs=loyalty_programs,
+                past_bookings_summary=past_bookings_summary,
+            )
+        
+        self.session.add(preferences)
+        self.session.commit()
+        self.session.refresh(preferences)
+        
+        # Write-through to cache
+        self._write_cache(preferences)
+        
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        action = "updated" if existing else "created"
+        logger.info(f"⏱ DB preferences {action}: {_format_duration(duration_ms)} | traveler_id={traveler_id}")
+        
+        return preferences
+    
+    # =========================================================================
+    # Read
+    # =========================================================================
+    
+    def get_by_id(self, traveler_id: str) -> Optional[UserPreferences]:
+        """Get preferences by traveler ID from database."""
+        return self.session.get(UserPreferences, traveler_id)
+    
+    def get_by_id_or_raise(self, traveler_id: str) -> UserPreferences:
+        """Get preferences by traveler ID or raise PreferencesNotFoundError."""
+        preferences = self.get_by_id(traveler_id)
+        if preferences is None:
+            raise PreferencesNotFoundError(traveler_id)
+        return preferences
+    
+    def get_summary(self, traveler_id: str) -> str:
+        """
+        Get preference summary for prompt inclusion.
+        
+        Fast path: reads from cache if available, otherwise from DB.
+        
+        Returns:
+            Summary string (~50 tokens) or default message if not found
+        """
+        # Try cache first (fastest)
+        cached = self._read_cache(traveler_id)
+        if cached and "summary" in cached:
+            return cached["summary"]
+        
+        # Fall back to database
+        preferences = self.get_by_id(traveler_id)
+        if preferences:
+            return preferences.generate_summary()
+        
+        return "No preferences set for this traveler"
+    
+    def get_full_preferences(self, traveler_id: str) -> Dict[str, Any]:
+        """
+        Get full preferences for tool response.
+        
+        Fast path: reads from cache if available (for tool execution speed).
+        
+        Returns:
+            Full preferences dict (~500 tokens)
+        
+        Raises:
+            PreferencesNotFoundError: If preferences don't exist
+        """
+        # Try cache first (fastest - critical for tool latency)
+        cached = self._read_cache(traveler_id)
+        if cached:
+            return cached
+        
+        # Fall back to database and rebuild cache
+        preferences = self.get_by_id_or_raise(traveler_id)
+        self._write_cache(preferences)  # Rebuild cache
+        return preferences.to_full_dict()
+    
+    # =========================================================================
+    # Delete
+    # =========================================================================
+    
+    def delete(self, traveler_id: str) -> bool:
+        """
+        Delete user preferences.
+        
+        Returns:
+            True if deleted
+        
+        Raises:
+            PreferencesNotFoundError: If preferences don't exist
+        """
+        preferences = self.get_by_id_or_raise(traveler_id)
+        
+        self.session.delete(preferences)
+        self.session.commit()
+        
+        # Remove from cache
+        self._delete_cache(traveler_id)
+        
+        logger.info(f"Deleted preferences: traveler_id={traveler_id}")
+        return True
+    
+    # =========================================================================
+    # Cache Management
+    # =========================================================================
+    
+    def rebuild_cache(self, traveler_id: str) -> bool:
+        """Rebuild cache from database for a specific traveler."""
+        preferences = self.get_by_id(traveler_id)
+        if preferences:
+            self._write_cache(preferences)
+            return True
+        return False
+    
+    def rebuild_all_caches(self) -> int:
+        """Rebuild all preference caches from database."""
+        query = select(UserPreferences)
+        all_prefs = list(self.session.exec(query).all())
+        
+        for pref in all_prefs:
+            self._write_cache(pref)
+        
+        logger.info(f"Rebuilt {len(all_prefs)} preference caches")
+        return len(all_prefs)
 
 
 # =============================================================================

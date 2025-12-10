@@ -12,6 +12,45 @@ logger = get_logger()
 _LOG_CONTENT_MAX_CHARS = 100
 
 
+def extract_token_usage(response) -> Optional[Dict[str, int]]:
+    """Extract token usage from an LLM response if available."""
+    try:
+        # LangChain stores usage in response_metadata for most providers
+        if hasattr(response, 'response_metadata'):
+            metadata = response.response_metadata
+            
+            # OpenAI format
+            if 'token_usage' in metadata:
+                usage = metadata['token_usage']
+                return {
+                    'input': usage.get('prompt_tokens', 0),
+                    'output': usage.get('completion_tokens', 0),
+                    'total': usage.get('total_tokens', 0),
+                }
+            
+            # Alternative format (some providers)
+            if 'usage' in metadata:
+                usage = metadata['usage']
+                return {
+                    'input': usage.get('input_tokens', usage.get('prompt_tokens', 0)),
+                    'output': usage.get('output_tokens', usage.get('completion_tokens', 0)),
+                    'total': usage.get('total_tokens', 0),
+                }
+        
+        # Anthropic/other providers may use usage_metadata
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            usage = response.usage_metadata
+            return {
+                'input': getattr(usage, 'input_tokens', 0),
+                'output': getattr(usage, 'output_tokens', 0),
+                'total': getattr(usage, 'total_tokens', 0),
+            }
+        
+        return None
+    except Exception:
+        return None
+
+
 def _truncate_for_log(text: str, max_chars: int = _LOG_CONTENT_MAX_CHARS) -> str:
     """Truncate text for logging, showing first N chars with indicator."""
     if len(text) <= max_chars:
@@ -117,41 +156,7 @@ class LangChainLLMProvider(LLMProvider):
     
     def _extract_token_usage(self, response) -> Optional[Dict[str, int]]:
         """Extract token usage from LLM response metadata."""
-        try:
-            # LangChain stores usage in response_metadata for most providers
-            if hasattr(response, 'response_metadata'):
-                metadata = response.response_metadata
-                
-                # OpenAI format
-                if 'token_usage' in metadata:
-                    usage = metadata['token_usage']
-                    return {
-                        'input': usage.get('prompt_tokens', 0),
-                        'output': usage.get('completion_tokens', 0),
-                        'total': usage.get('total_tokens', 0),
-                    }
-                
-                # Alternative format (some providers)
-                if 'usage' in metadata:
-                    usage = metadata['usage']
-                    return {
-                        'input': usage.get('input_tokens', usage.get('prompt_tokens', 0)),
-                        'output': usage.get('output_tokens', usage.get('completion_tokens', 0)),
-                        'total': usage.get('total_tokens', 0),
-                    }
-            
-            # Anthropic/other providers may use usage_metadata
-            if hasattr(response, 'usage_metadata') and response.usage_metadata:
-                usage = response.usage_metadata
-                return {
-                    'input': getattr(usage, 'input_tokens', 0),
-                    'output': getattr(usage, 'output_tokens', 0),
-                    'total': getattr(usage, 'total_tokens', 0),
-                }
-            
-            return None
-        except Exception:
-            return None
+        return extract_token_usage(response)
     
     def invoke_structured(self, prompt: str, response_format: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Invoke LLM with structured output format"""
