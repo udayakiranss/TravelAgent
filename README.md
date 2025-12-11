@@ -1,5 +1,4 @@
-Agentic Travel Booking System with LLM Integration
-====================================================
+# Agentic Travel Booking System with LLM Integration
 
 This system demonstrates a multi-agent architecture for travel booking with:
 - **LLM-based intelligent planning** - Uses foundation models to select appropriate agents
@@ -93,24 +92,65 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ## Architecture
 
+### System Overview
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        WEB[Web Browser]
+        MCP[MCP Client<br/>Claude/Cursor]
+    end
+    
+    subgraph "API Layer"
+        FASTAPI[FastAPI Server<br/>main_web.py]
+        ROUTES[Routes<br/>HTTP Controllers]
+        SERVICES[Services<br/>Business Logic]
+    end
+    
+    subgraph "Agent Layer"
+        ORCH[Orchestrator<br/>Agent Coordination]
+        PLAN[Planner<br/>LLM-based Planning]
+        AGENTS[Domain Agents<br/>Flight/Hotel/Car/Itinerary/Payment]
+    end
+    
+    subgraph "Data Layer"
+        DB[(SQLite Database)]
+        CACHE[Filesystem Cache<br/>Preferences]
+        TOOLS[Search Tools<br/>Mock Data]
+    end
+    
+    WEB --> FASTAPI
+    MCP --> FASTAPI
+    FASTAPI --> ROUTES
+    ROUTES --> SERVICES
+    SERVICES --> ORCH
+    SERVICES --> PLAN
+    ORCH --> AGENTS
+    PLAN --> ORCH
+    AGENTS --> DB
+    AGENTS --> CACHE
+    AGENTS --> TOOLS
+```
+
 ### Core Components
 
-1. **LLM Provider** (`agents/llm_provider.py`)
+1. **LLM Provider** (`agents/core/llm_provider.py`)
    - Flexible abstraction supporting multiple foundation models
    - Supports OpenAI, Anthropic, Google, and other providers via LangChain
    - Handles structured output generation
 
-2. **Planner** (`agents/planner.py`)
+2. **Planner** (`agents/planning/planner.py`)
    - **LLM-based planning**: Uses foundation models to intelligently select agents and tasks
-   - **Rule-based fallback**: Works without LLM for basic scenarios
-   - Converts user intents into structured agent task plans
+   - **Deterministic fallback**: Works without LLM for basic scenarios
+   - Converts user intents into structured `ExecutionPlan` with task DAGs
+   - Includes alias resolution for city/airport names
 
-3. **Orchestrator** (`agents/orchestrator.py`)
+3. **Orchestrator** (`agents/orchestration/orchestrator.py`)
    - Coordinates multiple specialized agents
-   - Owns NL interpretation (moved from routes for proper separation)
+   - Executes `ExecutionPlan` tasks in dependency order
    - Manages `TravelContext` flow to agents
+   - Handles preference loading and tool execution
    - Delegates status transitions to ItineraryAgent
-   - Depends on Planner to produce task plans before executing agents
 
 4. **TravelContext** (`api/context.py`)
    - Shared mutable context flowing through Routes → Services → Orchestrator → Agents
@@ -121,11 +161,14 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 5. **Service Layer** (`api/services/`)
    - Encapsulates business logic for itineraries, preferences, search, health, conversation, and planning
    - Keeps routes thin and testable; services coordinate with Orchestrator/Repositories
+   - Services: `PlanningService`, `ItineraryService`, `PreferenceService`, `SearchService`, `HealthService`, `ConversationService`
 
 6. **Web API** (`api/`, `main_web.py`)
    - **Thin HTTP controllers** that delegate to Services
    - FastAPI-based REST API with Swagger/OpenAPI
    - SQLite persistence layer
+   - Request ID middleware for traceability
+   - CORS support for frontend integration
 
 7. **MCP Server** (`mcp/server.py`)
    - Exposes API capabilities as **Tools** (actions) and **Resources** (read-only context)
@@ -134,33 +177,134 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ### Request Flow
 
-**A) Planning flow (only `PlanningService`):**
-```
-Routes → Services (PlanningService) → Planner → Orchestrator → Repositories
-             (builds plan)           (executes plan with ctx.session)
+#### Planning Flow (Natural Language Trip Planning)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Route as Agent Route
+    participant PS as PlanningService
+    participant Planner as TravelPlanner
+    participant Orch as Orchestrator
+    participant Agents as Domain Agents
+    participant Repo as Repository
+    participant DB as Database
+
+    Client->>Route: POST /agent/plan<br/>{query, traveler_id}
+    Route->>PS: plan_trip(request, ctx)
+    
+    PS->>PS: Load preference summary
+    PS->>Planner: create_plan_from_query(query, ctx)
+    
+    alt LLM Available
+        Planner->>Planner: LLM-based plan generation
+    else LLM Unavailable
+        Planner->>Planner: Deterministic planning (fallback)
+    end
+    
+    Planner-->>PS: ExecutionPlan (tasks, dependencies)
+    
+    alt Plan Needs Clarification
+        PS-->>Client: 400 Missing Information
+    else Plan Executable
+        PS->>Orch: execute_plan(plan, ctx)
+        
+        loop For each task in plan
+            Orch->>Agents: execute(action, params, ctx)
+            Agents->>TOOLS: Search/Book operations
+            Agents->>Repo: Persist results (via ctx.session)
+            Repo->>DB: Save itinerary/bookings
+        end
+        
+        Orch-->>PS: Result (itinerary_id, options, reservations)
+        PS-->>Route: PlanResponse
+        Route-->>Client: 200 Success with itinerary
+    end
 ```
 
-**B) Non-planning flows (all other services):**
-```
-Routes → Services (Itinerary/Preference/Search/Health/Conversation) → Orchestrator/Repositories
-                                                   (executes or persists with ctx.session)
+#### Non-Planning Flows (CRUD Operations)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Route as API Route
+    participant Service as Service Layer
+    participant Orch as Orchestrator/Repo
+    participant DB as Database
+
+    Client->>Route: HTTP Request<br/>(GET/POST/PUT/DELETE)
+    Route->>Service: Service method(ctx)
+    
+    alt Itinerary Operations
+        Service->>Orch: Orchestrator method(ctx)
+        Orch->>DB: CRUD via Repository
+    else Preference Operations
+        Service->>Orch: Repository operations
+        Orch->>DB: Save/load preferences
+    else Search Operations
+        Service->>Orch: Search tools
+        Orch-->>Service: Search results
+    end
+    
+    Service-->>Route: Response data
+    Route-->>Client: HTTP Response
 ```
 
-Notes:
-- Planner is used only by `PlanningService.plan_trip`; other services skip Planner.
-- Orchestrator always uses `ctx.session` when interacting with repositories/agents.
+### Agent Organization
+
+```mermaid
+graph LR
+    subgraph "Core Agents"
+        BASE[BaseAgent<br/>agents/core/base_agent.py]
+        LLM[LLMProvider<br/>agents/core/llm_provider.py]
+        MEM[Memory<br/>agents/core/memory.py]
+    end
+    
+    subgraph "Domain Agents"
+        FLIGHT[FlightBookingAgent<br/>agents/domain/flight_booking_agent.py]
+        HOTEL[HotelBookingAgent<br/>agents/domain/hotel_booking_agent.py]
+        CAR[CarRentalAgent<br/>agents/domain/car_rental_agent.py]
+        ITIN[ItineraryAgent<br/>agents/domain/itinerary_agent.py]
+        PAY[PaymentAgent<br/>agents/domain/payment_agent.py]
+    end
+    
+    subgraph "Orchestration"
+        ORCH[Orchestrator<br/>agents/orchestration/orchestrator.py]
+        RESP[ResponseFormatter<br/>agents/orchestration/response_formatter.py]
+    end
+    
+    subgraph "Planning"
+        PLAN[TravelPlanner<br/>agents/planning/planner.py]
+        DET[DeterministicPlanner<br/>agents/planning/deterministic_planner.py]
+        ALIAS[AliasResolver<br/>agents/planning/alias_resolver.py]
+    end
+    
+    BASE --> FLIGHT
+    BASE --> HOTEL
+    BASE --> CAR
+    BASE --> ITIN
+    BASE --> PAY
+    LLM --> ORCH
+    LLM --> PLAN
+    ORCH --> FLIGHT
+    ORCH --> HOTEL
+    ORCH --> CAR
+    ORCH --> ITIN
+    PLAN --> DET
+    PLAN --> ALIAS
+```
 
 ### Specialized Agents
 
 Each agent is a self-contained unit with multiple tools:
 
-| Agent | Tools | Purpose |
-|-------|-------|---------|
-| **FlightBookingAgent** | `search_flights`, `compare_flights`, `book_flight` | Flight operations |
-| **HotelBookingAgent** | `search_hotels`, `compare_hotels`, `book_hotel` | Hotel search & booking |
-| **CarRentalAgent** | `search_cars`, `compare_cars`, `book_car` | Car rental operations |
-| **ItineraryAgent** | `build_itinerary`, `update_itinerary`, `get_itinerary`, `list_itineraries` | Travel itinerary management |
-| **PaymentAgent** | `process_payment`, `verify_payment` | Payment processing |
+| Agent | Location | Tools | Purpose |
+|-------|----------|-------|---------|
+| **FlightBookingAgent** | `agents/domain/flight_booking_agent.py` | `search_flights`, `compare_flights`, `book_flight` | Flight operations |
+| **HotelBookingAgent** | `agents/domain/hotel_booking_agent.py` | `search_hotels`, `compare_hotels`, `book_hotel` | Hotel search & booking |
+| **CarRentalAgent** | `agents/domain/car_rental_agent.py` | `search_cars`, `compare_cars`, `book_car` | Car rental operations |
+| **ItineraryAgent** | `agents/domain/itinerary_agent.py` | `build_itinerary`, `update_itinerary`, `get_itinerary`, `list_itineraries`, `confirm`, `cancel` | Travel itinerary management |
+| **PaymentAgent** | `agents/domain/payment_agent.py` | `process_payment`, `verify_payment` | Payment processing |
 
 ### Selection Criteria
 
@@ -187,17 +331,20 @@ curl -X POST http://localhost:8000/api/v1/agent/plan \
 
 The system uses a **tiered preference loading pattern** for personalized recommendations:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Always in prompt: Preference Summary (~50 tokens)              │
-│  "Prefers: economy+, aisle seat, 4+ star hotels, $1500-3000"   │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼ (only when model needs details)
-┌─────────────────────────────────────────────────────────────────┐
-│  Tool: load_full_preferences (~500 tokens)                      │
-│  - Dietary restrictions, loyalty programs, past bookings        │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    START[User Request] --> LOAD[Load Preference Summary<br/>~50 tokens]
+    LOAD --> PROMPT[Include in LLM Prompt]
+    PROMPT --> DECISION{LLM Needs<br/>More Details?}
+    DECISION -->|90% of requests| DONE[Single LLM Call<br/>~1.6s latency]
+    DECISION -->|10% of requests| TOOL[Tool Call:<br/>load_full_preferences]
+    TOOL --> DETAILS[Load Full Preferences<br/>~500 tokens]
+    DETAILS --> DONE2[Complete Response<br/>~2.7s latency]
+    
+    style LOAD fill:#e1f5ff
+    style TOOL fill:#fff4e1
+    style DONE fill:#e8f5e9
+    style DONE2 fill:#e8f5e9
 ```
 
 **Benefits:**
@@ -278,16 +425,29 @@ curl -X POST http://localhost:8000/api/v1/itineraries/itin-abc123/confirm
 
 ### Status Workflow
 
-```
-    ┌─────────┐    confirm    ┌───────────┐
-    │  draft  │──────────────▶│ confirmed │
-    └────┬────┘               └─────┬─────┘
-         │                          │
-         │ cancel                   │ cancel
-         ▼                          ▼
-    ┌───────────┐             ┌───────────┐
-    │ cancelled │◀────────────│ cancelled │
-    └───────────┘             └───────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> draft: Create Itinerary
+    draft --> confirmed: confirm()
+    draft --> cancelled: cancel()
+    confirmed --> cancelled: cancel()
+    cancelled --> [*]
+    
+    note right of draft
+        Can be modified
+        (add/remove bookings,
+        NL updates)
+    end note
+    
+    note right of confirmed
+        Locked state
+        No modifications allowed
+    end note
+    
+    note right of cancelled
+        Terminal state
+        Cannot be changed
+    end note
 ```
 
 - **draft**: Can be modified (add/remove bookings, NL updates)
@@ -312,24 +472,26 @@ If the version doesn't match, you'll receive a `409 Conflict` response.
 
 ## Database Schema
 
-The API uses SQLite with two tables:
+The API uses SQLite with three main tables:
 
 ### `itinerary` Table
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | TEXT (PK) | UUID identifier (e.g., "itin-abc123") |
 | `traveler_id` | TEXT | Traveler identifier |
 | `original_query` | TEXT | Original NL query |
 | `status` | TEXT | draft, confirmed, cancelled |
-| `flight_data` | JSON | Flight booking details |
-| `hotel_data` | JSON | Hotel booking details |
-| `car_data` | JSON | Car rental details |
+| `flight_reservation` | JSON | Flight booking details |
+| `hotel_reservation` | JSON | Hotel booking details |
+| `car_reservation` | JSON | Car rental details |
 | `total_cost` | REAL | Computed total |
 | `version` | INTEGER | Optimistic locking version |
 | `created_at` | TIMESTAMP | Creation time |
 | `updated_at` | TIMESTAMP | Last modification |
 
 ### `chat_history` Table
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | TEXT (PK) | Message UUID |
@@ -339,6 +501,7 @@ The API uses SQLite with two tables:
 | `created_at` | TIMESTAMP | Message time |
 
 ### `user_preferences` Table
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `traveler_id` | TEXT (PK) | Traveler identifier |
@@ -362,28 +525,44 @@ The API uses SQLite with two tables:
 ```
 travel-agents/
 ├── agents/
-│   ├── base_agent.py           # Base class for all agents
-│   ├── llm_provider.py         # LLM integration layer
-│   ├── planner.py              # LLM-based planning
-│   ├── orchestrator.py         # Agent coordination + preference integration
-│   ├── flight_booking_agent.py
-│   ├── hotel_booking_agent.py
-│   ├── car_rental_agent.py
-│   ├── itinerary_agent.py      # Updated with DB support
-│   ├── payment_agent.py
-│   ├── memory.py               # Memory management
-│   └── router.py               # Legacy router
+│   ├── __init__.py
+│   ├── core/                      # Core agent infrastructure
+│   │   ├── __init__.py
+│   │   ├── base_agent.py          # Base class for all agents
+│   │   ├── llm_provider.py        # LLM integration abstraction
+│   │   ├── memory.py              # Memory/conversation management
+│   │   └── router.py              # Legacy router
+│   ├── domain/                    # Domain-specific agents
+│   │   ├── __init__.py
+│   │   ├── flight_booking_agent.py
+│   │   ├── hotel_booking_agent.py
+│   │   ├── car_rental_agent.py
+│   │   ├── itinerary_agent.py    # DB-aware itinerary management
+│   │   └── payment_agent.py
+│   ├── orchestration/             # Agent coordination
+│   │   ├── __init__.py
+│   │   ├── orchestrator.py        # Main orchestrator
+│   │   └── response_formatter.py  # LLM response formatting
+│   └── planning/                  # Planning logic
+│       ├── __init__.py
+│       ├── planner.py             # Main TravelPlanner
+│       ├── deterministic_planner.py  # Fallback planner
+│       ├── alias_resolver.py     # City/airport alias resolution
+│       └── schemas.py            # ExecutionPlan schemas
 ├── api/
 │   ├── __init__.py
-│   ├── routes/                 # Modular FastAPI routers
-│   │   ├── __init__.py         # Registers all sub-routers
-│   │   ├── health.py           # /health
-│   │   ├── search.py           # /search/*
-│   │   ├── itineraries.py      # /itineraries/*
-│   │   ├── preferences.py      # /preferences/*
-│   │   └── agent.py            # /agent/plan, /itineraries/{id}/modify
-│   ├── routes.py.old           # Deprecated legacy routes (kept for reference)
-│   ├── services/               # Service layer (business logic)
+│   ├── config.py                 # Configuration constants
+│   ├── context.py                # TravelContext dataclass
+│   ├── dependencies.py           # FastAPI DI bindings
+│   ├── schemas.py                # Pydantic request/response models
+│   ├── routes/                   # Modular FastAPI routers
+│   │   ├── __init__.py           # Registers all sub-routers
+│   │   ├── health.py             # /health
+│   │   ├── search.py             # /search/*
+│   │   ├── itineraries.py        # /itineraries/*
+│   │   ├── preferences.py        # /preferences/*
+│   │   └── agent.py             # /agent/plan, /itineraries/{id}/modify
+│   ├── services/                 # Service layer (business logic)
 │   │   ├── __init__.py
 │   │   ├── itinerary_service.py
 │   │   ├── preference_service.py
@@ -391,41 +570,69 @@ travel-agents/
 │   │   ├── health_service.py
 │   │   ├── conversation_service.py
 │   │   └── planning_service.py
-│   ├── utils/                  # Shared helpers
-│   │   ├── __init__.py
-│   │   └── response_utils.py
-│   ├── schemas.py              # Pydantic models
-│   ├── context.py              # TravelContext for request state
-│   └── dependencies.py         # FastAPI dependencies and DI bindings
+│   └── utils/                    # Shared helpers
+│       ├── __init__.py
+│       └── response_utils.py
 ├── database/
 │   ├── __init__.py
-│   ├── models.py               # SQLModel ORM (Itinerary, UserPreferences)
-│   ├── connection.py           # DB connection
-│   └── repository.py           # CRUD + preference cache sync
+│   ├── models.py                 # SQLModel ORM (Itinerary, UserPreferences, ChatHistory)
+│   ├── connection.py             # DB connection & table creation
+│   └── repository.py             # CRUD + preference cache sync
 ├── tools/
-│   ├── search_tools.py         # Flight, hotel, car search tools
-│   └── preference_tools.py     # load_full_preferences tool
+│   ├── search_tools.py           # Flight, hotel, car search tools
+│   ├── preference_tools.py       # load_full_preferences tool
+│   └── payment_tool.py           # Payment processing tool
 ├── data/
-│   ├── flights.py              # Mock flight data
-│   ├── hotels.py               # Mock hotel data
-│   ├── cars.py                 # Mock car data
-│   └── user_preferences/       # Filesystem cache for preferences
-│       ├── user_123.json       # Sample preferences
-│       └── user_456.json       # Sample preferences
-├── docs/
-│   └── USER_PREFERENCES_PLAN.md  # Architecture documentation
+│   ├── flights.py                # Mock flight data
+│   ├── hotels.py                 # Mock hotel data
+│   ├── cars.py                   # Mock car data
+│   ├── city_airport_aliases.json  # City/airport alias mapping
+│   └── user_preferences/         # Filesystem cache for preferences
+│       ├── user_123.json         # Sample preferences
+│       └── user_456.json         # Sample preferences
+├── docs/                         # Architecture documentation
+│   ├── AGENTIC_REFACTOR_PLAN.md
+│   ├── ARCHITECTURE_REUSE_PROMPT.md
+│   ├── FEATURE_VERIFICATION.md
+│   ├── LOGGING.md
+│   ├── PLAN_TRIP_API_FLOW.md
+│   ├── PLANNER_DAG_DESIGN.md
+│   ├── PLANNER_FALLBACK_ANALYSIS.md
+│   ├── PLANNER_REFACTOR.md
+│   ├── REUSING_PROJECT_STRUCTURE.md
+│   ├── USER_PREFERENCES_PLAN.md
+│   └── WebApp-Impl-Plan*.md
 ├── tests/
-│   ├── test_api.py             # API tests
-│   ├── test_services/          # Service layer unit tests
-│   ├── test_agents/            # Agent tests
-│   ├── test_core/              # Core planner/orchestrator tests
-│   └── test_integration/       # Integration flows
-├── main_web.py                 # FastAPI entry point
-├── mcp/
+│   ├── conftest.py               # Pytest fixtures
+│   ├── test_api.py               # API integration tests
+│   ├── test_agents/               # Agent unit tests
+│   │   ├── test_flight_agent.py
+│   │   ├── test_hotel_agent.py
+│   │   ├── test_car_agent.py
+│   │   ├── test_itinerary_agent.py
+│   │   └── test_payment_agent.py
+│   ├── test_core/                 # Core component tests
+│   │   ├── test_orchestrator.py
+│   │   └── test_planner.py
+│   ├── test_integration/          # End-to-end flow tests
+│   │   └── test_flows.py
+│   └── test_services/            # Service layer unit tests
+│       ├── conftest.py
+│       ├── test_itinerary_service.py
+│       ├── test_preference_service.py
+│       ├── test_search_service.py
+│       ├── test_health_service.py
+│       ├── test_conversation_service.py
+│       └── test_planning_service.py
+├── utils/
 │   ├── __init__.py
-│   └── server.py               # MCP Server implementation
-├── requirements.txt
-└── README.md
+│   └── logger.py                  # Comprehensive logging system
+├── mcp/
+│   └── server.py                  # MCP Server implementation
+├── main_web.py                    # FastAPI entry point
+├── requirements.txt              # Python dependencies
+├── pyrightconfig.json            # Type checking config
+└── README.md                      # This file
 ```
 
 ---
@@ -469,6 +676,15 @@ python -m pytest tests/test_api.py -v
 # Run service layer tests
 python -m pytest tests/test_services/ -v
 
+# Run agent tests
+python -m pytest tests/test_agents/ -v
+
+# Run core component tests
+python -m pytest tests/test_core/ -v
+
+# Run integration tests
+python -m pytest tests/test_integration/ -v
+
 # Run everything
 python -m pytest tests/ -v
 
@@ -480,6 +696,8 @@ Test coverage includes:
 - API flows (CRUD, status transitions, optimistic locking, pagination/filtering)
 - LLM operations (with mocking)
 - Service layer business logic (itineraries, preferences, search, health, conversation, planning)
+- Agent unit tests (all domain agents)
+- Core component tests (orchestrator, planner)
 - Integration tests (full workflows)
 
 ---
@@ -489,8 +707,8 @@ Test coverage includes:
 ### CLI Usage
 
 ```python
-from agents.orchestrator import Orchestrator
-from agents.llm_provider import create_llm_provider
+from agents.orchestration import Orchestrator
+from agents.core.llm_provider import create_llm_provider
 
 # Initialize with LLM
 llm = create_llm_provider(model_name="gpt-4o", model_provider="openai")
@@ -601,3 +819,86 @@ Domain exceptions are raised by Orchestrator/Agents and translated to HTTP by ro
 | `InvalidStatusTransitionError` | 400 | Invalid status change |
 | `LLMUnavailableError` | 503 | LLM service not available |
 | `PreferencesNotFoundError` | 404 | User preferences not found |
+
+---
+
+## Planning Architecture
+
+### Execution Plan Structure
+
+The planner generates `ExecutionPlan` objects with the following structure:
+
+```mermaid
+graph TD
+    PLAN[ExecutionPlan] --> STATUS[status:<br/>executable/needs_clarification]
+    PLAN --> TASKS[tasks: List[Task]]
+    PLAN --> METADATA[plan_metadata:<br/>PlanMetadata]
+    PLAN --> MISSING[missing_info:<br/>List[MissingInfo]]
+    
+    TASK[Task] --> ID[task_id: str]
+    TASK --> AGENT[agent: str<br/>FlightBookingAgent]
+    TASK --> ACTION[action: str<br/>search_flights]
+    TASK --> PARAMS[params: Dict]
+    TASK --> DEPS[dependencies: List[str]]
+    TASK --> SCHEMA[output_schema: Dict]
+    TASK --> PARALLEL[parallelizable: bool]
+    
+    TASKS --> TASK
+```
+
+### Planning Flow
+
+```mermaid
+flowchart TD
+    START[NL Query] --> PLANNER[TravelPlanner]
+    
+    PLANNER --> LLM_CHECK{LLM<br/>Available?}
+    
+    LLM_CHECK -->|Yes| LLM_PLAN[LLM-based Planning]
+    LLM_CHECK -->|No| DET_PLAN[Deterministic Planning]
+    
+    LLM_PLAN --> PARSE[Parse NL Query]
+    PARSE --> EXTRACT[Extract Intent]
+    EXTRACT --> BUILD[Build ExecutionPlan]
+    
+    DET_PLAN --> NORMALIZE[Normalize Intent<br/>Alias Resolution]
+    NORMALIZE --> VALIDATE[Validate Required Fields]
+    VALIDATE --> MISSING_CHECK{Missing<br/>Fields?}
+    
+    MISSING_CHECK -->|Yes| CLARIFY[Return needs_clarification<br/>with missing_info]
+    MISSING_CHECK -->|No| BUILD
+    
+    BUILD --> DAG[Create Task DAG<br/>with dependencies]
+    DAG --> EXECUTABLE[Return ExecutionPlan<br/>status=executable]
+    
+    CLARIFY --> END1[Return to Client]
+    EXECUTABLE --> ORCH[Orchestrator.execute_plan]
+    
+    style LLM_PLAN fill:#e1f5ff
+    style DET_PLAN fill:#fff4e1
+    style EXECUTABLE fill:#e8f5e9
+    style CLARIFY fill:#ffebee
+```
+
+---
+
+## Logging
+
+The system includes comprehensive logging with:
+- **Request ID tracking** - Every request gets a unique ID for correlation
+- **Structured logging** - JSON-formatted logs with context
+- **Multiple outputs** - Console and file logging
+- **Performance tracking** - Request duration and method timing
+- **Session context** - Automatic context propagation
+
+Logs are written to:
+- Console (stdout) - Human-readable format
+- `logs/travel_booking.log` - File with full details
+
+See `docs/LOGGING.md` for detailed logging documentation.
+
+---
+
+## License
+
+This project is provided as-is for educational and demonstration purposes.
