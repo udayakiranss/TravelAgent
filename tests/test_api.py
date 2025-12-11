@@ -3,7 +3,7 @@ API tests for Travel Booking Web Application.
 Uses TestClient from FastAPI with LLM mocking strategy.
 """
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
@@ -408,7 +408,7 @@ class TestLLMOperations:
     """Tests for LLM-powered operations (with mocked LLM)."""
     
     def test_plan_trip_no_llm(self, client: TestClient):
-        """Test that plan endpoint returns 503 when LLM is unavailable."""
+        """Test that plan endpoint returns 400 MISSING_INFORMATION when LLM is unavailable and rule-based fails."""
         response = client.post(
             "/api/v1/agent/plan",
             json={
@@ -417,9 +417,40 @@ class TestLLMOperations:
             }
         )
         
-        assert response.status_code == 503
+        # With new robust Planner, missing LLM triggers rule-based fallback.
+        # "Plan a trip to Paris" misses 'from' and 'date', so it becomes needs_clarification (400)
+        assert response.status_code == 400
         data = response.json()
-        assert data["detail"]["error"] == "LLM_UNAVAILABLE"
+        assert data["code"] == "MISSING_INFORMATION"
+
+    def test_plan_trip_success(self, client_with_llm: TestClient, mock_llm: MagicMock):
+        """Test successful trip planning with mocked LLM."""
+        # Mock LLM response for intent parsing
+        mock_llm.invoke_structured.return_value = {
+            "needs": ["flight"],
+            "from": "NYC",
+            "to": "PAR",
+            "date": "2025-06-15"
+        }
+        
+        # Mock LLM response for summary generation (if any)
+        mock_llm.invoke.return_value = "Mock summary"
+
+        response = client_with_llm.post(
+            "/api/v1/agent/plan",
+            json={
+                "query": "Plan a flight from NYC to Paris on 2025-06-15",
+                "traveler_id": "user_123",
+                "include_summary": False
+            }
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "itinerary_id" in data
+        assert "flight_reservation" in data
+
+
     
     def test_modify_no_llm(self, client: TestClient, session: Session):
         """Test that modify endpoint returns 503 when LLM is unavailable."""

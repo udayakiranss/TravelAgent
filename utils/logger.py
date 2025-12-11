@@ -194,6 +194,9 @@ class TravelBookingLogger:
             lineno = caller_frame.f_lineno
             funcname = caller_frame.f_code.co_name
             
+            # Merge any custom fields passed via logging extra
+            extra_fields = kwargs.get("extra")
+            
             # Create a LogRecord with the correct caller information
             record = self._logger.makeRecord(
                 self._logger.name,
@@ -203,7 +206,8 @@ class TravelBookingLogger:
                 message,
                 (),
                 None,
-                funcname
+                funcname,
+                extra=extra_fields
             )
             self._logger.handle(record)
         finally:

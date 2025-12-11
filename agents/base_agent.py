@@ -34,13 +34,14 @@ class BaseAgent(ABC):
         pass
     
     @abstractmethod
-    def execute(self, task: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, task: str, params: Dict[str, Any], ctx: Optional["TravelContext"] = None) -> Any:
         """
         Execute a task using the agent's tools
         
         Args:
             task: Task name
             params: Task parameters
+            ctx: Optional TravelContext for context-aware operations
         
         Returns:
             Task result

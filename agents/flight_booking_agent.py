@@ -15,17 +15,67 @@ logger = get_logger()
 @tool
 def search_flights_tool(query: Dict[str, Any]) -> list:
     """Search flights by origin, destination, and date. Returns list of available flights."""
-    origin = query.get('origin', query.get('from', '')).upper()
-    destination = query.get('destination', query.get('to', '')).upper()
-    date = query.get('date', '')
+    # Unwrap if params are nested under 'query' key (from LangChain tool invocation)
+    if 'query' in query and isinstance(query['query'], dict):
+        query = query['query']
     
-    results = [
-        f for f in FLIGHTS 
-        if f['from'] == origin and f['to'] == destination and f['date'] == date
-    ]
+    logger.debug(f"Flight search tool called with query: {query}")
     
-    logger.info(f"Flight search: {origin}->{destination} on {date} -> {len(results)} results")
+    # Handle multiple parameter name variations
+    origin = query.get('origin') or query.get('from') or ''
+    destination = query.get('destination') or query.get('to') or ''
+    # Handle date variations: 'date', 'departure_date', 'departureDate'
+    date = query.get('date') or query.get('departure_date') or query.get('departureDate') or ''
+
+    if not origin or not destination:
+        logger.warning(f"Flight search missing required params: origin={origin}, destination={destination}")
+        return []
+
+    origin = origin.upper()
+    destination = destination.upper()
+    
+    # Normalize airport codes (e.g., JFK/LGA/EWR -> NYC, LHR/LGW -> LON)
+    origin = _normalize_airport_code(origin)
+    destination = _normalize_airport_code(destination)
+    
+    # If date is provided, filter by date; otherwise return all matching routes
+    if date:
+        results = [
+            f for f in FLIGHTS 
+            if f['from'] == origin and f['to'] == destination and f['date'] == date
+        ]
+    else:
+        # If no date, return all flights for the route
+        results = [
+            f for f in FLIGHTS 
+            if f['from'] == origin and f['to'] == destination
+        ]
+        logger.info(f"Flight search: {origin}->{destination} (no date filter) -> {len(results)} results")
+    
+    logger.info(f"Flight search: {origin}->{destination} on {date or 'any date'} -> {len(results)} results")
     return results
+
+
+def _normalize_airport_code(code: str) -> str:
+    """Normalize airport codes to match flight data.
+    
+    Maps specific airport codes to city codes used in FLIGHTS data:
+    - JFK, LGA, EWR -> NYC
+    - LHR, LGW, STN, LCY, LTN -> LON
+    - CDG, ORY -> PAR
+    """
+    code = code.upper()
+    # NYC area airports
+    if code in ['JFK', 'LGA', 'EWR']:
+        return 'NYC'
+    # London area airports
+    if code in ['LHR', 'LGW', 'STN', 'LCY', 'LTN']:
+        return 'LON'
+    # Paris area airports
+    if code in ['CDG', 'ORY']:
+        return 'PAR'
+    # Return as-is if no mapping found
+    return code
 
 
 @tool
@@ -99,26 +149,46 @@ class FlightBookingAgent(BaseAgent):
         self, 
         params: Dict[str, Any], 
         ctx: "TravelContext"
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Search for flights and return the best option based on context criteria.
+        Returns dict with keys 'reservation' and 'options'.
         """
-        all_flights = self._call_tool('search_flights', params)
+        try:
+            all_flights = self._call_tool('search_flights', params)
+        except Exception as e:
+            logger.error(f"Flight search failed: {e}")
+            return {"reservation": None, "options": [], "error": str(e)}
         
-        if not all_flights or isinstance(all_flights, dict) and "error" in all_flights:
-            return None
+        # Handle error case (dict with error key)
+        if isinstance(all_flights, dict) and "error" in all_flights:
+            return {"reservation": None, "options": [], "error": all_flights["error"]}
         
+        # Ensure all_flights is a list
+        if not isinstance(all_flights, list):
+            logger.warning(f"Flight search returned non-list result: {type(all_flights)}")
+            all_flights = []
+        
+        if not all_flights:
+            logger.warning(f"No flights found for params: {params}")
+            return {"reservation": None, "options": []}
+
         selected = self._select_best(all_flights, ctx.criteria)
         
         if selected:
             # Convert to reservation format
-            selected = {
+            reservation = {
                 **selected,
                 "origin": selected.get("from", selected.get("origin")),
                 "destination": selected.get("to", selected.get("destination")),
             }
+        else:
+            reservation = None
         
-        return selected
+        return {
+            "reservation": reservation,
+            "options": all_flights
+        }
     
     def execute(self, task: str, params: Dict[str, Any], ctx: Optional["TravelContext"] = None) -> Any:
         """Execute flight booking task"""

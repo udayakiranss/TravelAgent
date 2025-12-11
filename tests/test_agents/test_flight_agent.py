@@ -1,4 +1,4 @@
-import pytest
+import pytest  # type: ignore
 from agents.flight_booking_agent import FlightBookingAgent, search_flights_tool, compare_flights_tool, book_flight_tool
 
 class TestFlightBookingAgent:

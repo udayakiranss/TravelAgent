@@ -20,7 +20,7 @@ def search_cars_tool(query: Dict[str, Any]) -> list:
         city = city.upper()
     
     if not city:
-        return []
+        return {"error": "city is required"}
     
     results = [c for c in CARS if c['city'] == city]
     logger.info(f"Car search: {city} -> {len(results)} results")
@@ -102,14 +102,21 @@ class CarRentalAgent(BaseAgent):
         self, 
         params: Dict[str, Any], 
         ctx: "TravelContext"
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """Search for rental cars and return the best option based on context criteria."""
         all_cars = self._call_tool('search_cars', params)
         
-        if not all_cars or isinstance(all_cars, dict) and "error" in all_cars:
-            return None
+        if isinstance(all_cars, dict) and "error" in all_cars:
+            return {"reservation": None, "options": [], "error": all_cars["error"]}
         
-        return self._select_best(all_cars, ctx.criteria)
+        if not all_cars:
+             return {"reservation": None, "options": []}
+        
+        selected = self._select_best(all_cars, ctx.criteria)
+        return {
+            "reservation": selected,
+            "options": all_cars
+        }
     
     def execute(self, task: str, params: Dict[str, Any], ctx: Optional["TravelContext"] = None) -> Any:
         """Execute car rental task"""

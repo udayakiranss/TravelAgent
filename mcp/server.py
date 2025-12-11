@@ -205,30 +205,77 @@ async def search_flights(origin: str, destination: str, date: str) -> str:
     Search for available flights without creating an itinerary.
     
     Args:
-        origin: Origin city or airport code (e.g. "NYC", "London")
-        destination: Destination city or airport code (e.g. "PAR", "Paris")
-        date: Travel date in YYYY-MM-DD format
+        origin: Origin city or airport code (e.g. "NYC", "London", "JFK")
+        destination: Destination city or airport code (e.g. "PAR", "Paris", "LHR")  
+        date: Travel date in YYYY-MM-DD format (e.g. "2025-12-08")
+    
+    Returns:
+        Formatted string listing available flights with details
     """
+    # Validate inputs
+    if not origin:
+        return "Error: origin parameter is required."
+    if not destination:
+        return "Error: destination parameter is required."
+    if not date:
+        return "Error: date parameter is required."
+    
+    # Build payload with validated parameters
+    origin_str = str(origin).strip()
+    destination_str = str(destination).strip()
+    date_str = str(date).strip()
+    
     payload = {
-        "origin": origin,
-        "destination": destination,
-        "date": date
+        "origin": origin_str,
+        "destination": destination_str,
+        "date": date_str
     }
     
     try:
         response = await make_request("POST", "/search/flights", data=payload)
-        if not response:
-            return f"No flights found from {origin} to {destination} on {date}."
+        
+        # Handle empty or None response
+        if not response or (isinstance(response, list) and len(response) == 0):
+            return f"No flights found from {origin_str} to {destination_str} on {date_str}."
+        
+        # Ensure response is a list
+        if not isinstance(response, list):
+            return f"Unexpected response format from API: {type(response)}"
         
         result = [f"Found {len(response)} flights:"]
         for flight in response:
+            if not isinstance(flight, dict):
+                continue
+                
+            # Handle both 'from'/'to' and 'origin'/'destination' keys
+            flight_origin = flight.get('origin') or flight.get('from', '?')
+            flight_destination = flight.get('destination') or flight.get('to', '?')
+            flight_id = flight.get('id', '')
+            airline = flight.get('airline', 'Unknown')
+            price = flight.get('price', 0)
+            departure = flight.get('departure', '')
+            arrival = flight.get('arrival', '')
+            duration = flight.get('duration', '')
+            
             result.append(
-                f"- {flight['airline']} {flight.get('flight_number', '')}: "
-                f"${flight['price']} ({flight['origin']} -> {flight['destination']})"
+                f"- {airline} ({flight_id}): ${price} | {flight_origin} -> {flight_destination}"
             )
+            if departure and arrival:
+                result[-1] += f" | Dep: {departure}, Arr: {arrival}"
+            if duration:
+                result[-1] += f" | Duration: {duration}"
         return "\n".join(result)
+    except KeyError as e:
+        logger.error(f"Flight search KeyError: Missing key {e} in response")
+        return f"Flight Search Failed: Missing data in API response - {str(e)}"
+    except AttributeError as e:
+        logger.error(f"Flight search AttributeError: {e}")
+        return f"Flight Search Failed: Invalid response format - {str(e)}"
     except Exception as e:
-        return f"Flight Search Failed: {str(e)}"
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logger.error(f"Flight search error [{error_type}]: {error_msg}", exc_info=True)
+        return f"Flight Search Failed [{error_type}]: {error_msg}"
 
 @mcp.tool()
 @logged_mcp_action("TOOL")
@@ -248,10 +295,20 @@ async def search_hotels(city: str) -> str:
         
         result = [f"Found {len(response)} hotels in {city}:"]
         for hotel in response:
+            name = hotel.get('name', 'Unknown')
+            price = hotel.get('total_price') or hotel.get('price', 0)
+            rating = hotel.get('rating', 'N/A')
+            category = hotel.get('category', '')
+            location = hotel.get('location', hotel.get('city', 'N/A'))
+            
             result.append(
-                f"- {hotel['name']}: ${hotel['total_price']} total "
-                f"(Rating: {hotel.get('rating', 'N/A')}, Location: {hotel.get('location', 'N/A')})"
+                f"- {name}: ${price} per night"
             )
+            if rating != 'N/A':
+                result[-1] += f" | Rating: {rating}/5"
+            if category:
+                result[-1] += f" | Category: {category}"
+            result[-1] += f" | Location: {location}"
         return "\n".join(result)
     except Exception as e:
         return f"Hotel Search Failed: {str(e)}"
@@ -274,8 +331,13 @@ async def search_cars(city: str) -> str:
         
         result = [f"Found {len(response)} cars in {city}:"]
         for car in response:
+            company = car.get('company', 'Unknown')
+            car_type = car.get('car_type') or car.get('type', 'Unknown')
+            model = car.get('model', 'Unknown')
+            price = car.get('total_price') or car.get('price', 0)
+            
             result.append(
-                f"- {car['company']} {car['car_type']} ({car['model']}): ${car['total_price']} total"
+                f"- {company} {car_type} ({model}): ${price} per day"
             )
         return "\n".join(result)
     except Exception as e:

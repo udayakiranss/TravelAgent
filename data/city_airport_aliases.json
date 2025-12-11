@@ -1,0 +1,51 @@
+[
+  {
+    "city": "New York",
+    "country": "US",
+    "primary_airport": "JFK",
+    "airports": ["JFK", "LGA", "EWR", "NYC"],
+    "aliases": ["new york", "nyc", "jfk", "laguardia", "lga", "ewr"]
+  },
+  {
+    "city": "London",
+    "country": "UK",
+    "primary_airport": "LHR",
+    "airports": ["LHR", "LGW", "STN", "LCY", "LTN", "LON"],
+    "aliases": ["london", "lon", "lhr", "heathrow", "gatwick", "lgw", "stn", "lcy", "ltn"]
+  },
+  {
+    "city": "Paris",
+    "country": "FR",
+    "primary_airport": "CDG",
+    "airports": ["CDG", "ORY", "PAR"],
+    "aliases": ["paris", "par", "cdg", "ory"]
+  },
+  {
+    "city": "San Francisco",
+    "country": "US",
+    "primary_airport": "SFO",
+    "airports": ["SFO"],
+    "aliases": ["san francisco", "sf", "sfo"]
+  },
+  {
+    "city": "Los Angeles",
+    "country": "US",
+    "primary_airport": "LAX",
+    "airports": ["LAX"],
+    "aliases": ["los angeles", "la", "lax"]
+  },
+  {
+    "city": "Chicago",
+    "country": "US",
+    "primary_airport": "ORD",
+    "airports": ["ORD", "MDW"],
+    "aliases": ["chicago", "chi", "ord", "ohare", "mdw", "midway"]
+  },
+  {
+    "city": "Washington",
+    "country": "US",
+    "primary_airport": "DCA",
+    "airports": ["DCA", "IAD"],
+    "aliases": ["washington", "dc", "dca", "iad"]
+  }
+]

@@ -23,8 +23,9 @@ class TestOrchestrator:
         task = {"task": "build_itinerary"}
         params = {}
         enriched = orchestrator._enrich_params(params, context, task)
-        assert "flight_booking" in enriched
-        assert "hotel_booking" in enriched
+        # Updated to use new naming convention: flight_reservation instead of flight_booking
+        assert "flight_reservation" in enriched
+        assert "hotel_reservation" in enriched
         
         # Test payment enrichment
         context["ItineraryAgent"] = {"total_cost": 800}
@@ -49,7 +50,9 @@ class TestOrchestrator:
             }
         ]
         
-        intent = {"needs": ["flight"], "from": "NYC", "to": "LON"}
+        # Added date to prevent needs_clarification status from planner
+        intent = {"needs": ["flight"], "from": "NYC", "to": "LON", "date": "2025-08-12"}
         results = orchestrator.run_intent(intent)
         
-        assert "FlightBookingAgent.search_flights" in results
+        assert "FlightBookingAgent.search_flights" in results["results"]
+

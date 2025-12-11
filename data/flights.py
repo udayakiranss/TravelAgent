@@ -38,6 +38,11 @@ FLIGHTS = [
     {"id": "F023", "from": "DEL", "to": "DXB", "date": "2025-09-01", "price": 280, "airline": "Air India", "departure": "10:00", "arrival": "12:00", "duration": "3h 30m"},
     {"id": "F024", "from": "DEL", "to": "NYC", "date": "2025-09-10", "price": 900, "airline": "Air India", "departure": "01:00", "arrival": "07:00", "duration": "15h"},
     
+    # NYC to London - December 2025
+    {"id": "F028", "from": "NYC", "to": "LON", "date": "2025-12-08", "price": 780, "airline": "British Airways", "departure": "20:00", "arrival": "08:00", "duration": "7h"},
+    {"id": "F029", "from": "NYC", "to": "LON", "date": "2025-12-08", "price": 720, "airline": "Virgin Atlantic", "departure": "22:00", "arrival": "10:00", "duration": "7h"},
+    {"id": "F030", "from": "NYC", "to": "LON", "date": "2025-12-08", "price": 850, "airline": "American Airlines", "departure": "18:00", "arrival": "06:00", "duration": "7h"},
+    
     # Hyderabad (HYD) to Dubai (DXB)
     {"id": "F025", "from": "HYD", "to": "DXB", "date": "2026-04-01", "price": 310, "airline": "Emirates", "departure": "05:30", "arrival": "08:00", "duration": "4h"},
     {"id": "F026", "from": "HYD", "to": "DXB", "date": "2026-04-05", "price": 255, "airline": "IndiGo", "departure": "11:00", "arrival": "13:30", "duration": "4h"},

@@ -12,6 +12,7 @@ from sqlmodel import Session
 
 from database.connection import engine, create_db_and_tables
 from agents.orchestrator import Orchestrator
+from agents.planner import TravelPlanner
 from agents.llm_provider import create_llm_provider, LLMProvider
 from api.context import TravelContext
 from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
@@ -173,11 +174,38 @@ def get_orchestrator(
 
 
 # =============================================================================
+# Planner Dependencies
+# =============================================================================
+
+# Cached planner instance (shared across requests)
+_planner_instance: Optional[TravelPlanner] = None
+
+
+def get_planner(
+    llm: Optional[LLMProvider] = Depends(get_llm),
+) -> TravelPlanner:
+    """
+    Get or create a TravelPlanner instance.
+    
+    The Planner is cached because it's stateless.
+    It handles NL parsing → ExecutionPlan creation.
+    """
+    global _planner_instance
+    
+    if _planner_instance is None:
+        _planner_instance = TravelPlanner(llm=llm)
+    
+    return _planner_instance
+
+
+# =============================================================================
 # Startup/Shutdown Events
 # =============================================================================
 
 def startup_event():
     """Run on application startup."""
+    global _planner_instance
+
     global _orchestrator_instance
     
     # Create database tables

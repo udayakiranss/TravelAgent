@@ -15,15 +15,76 @@ logger = get_logger()
 @tool
 def search_hotels_tool(query: Dict[str, Any]) -> list:
     """Search hotels by city. Returns list of available hotels."""
-    city = query.get('city', '').upper()
+    # Unwrap if params are nested under 'query' key (from LangChain tool invocation)
+    if 'query' in query and isinstance(query['query'], dict):
+        query = query['query']
+    
+    logger.debug(f"Hotel search tool called with query: {query}")
+    
+    city = query.get('city', '')
+    if not city:
+        logger.warning(f"Hotel search missing required param: city")
+        return []
+    
+    # Normalize city name to airport code format used in HOTELS data
+    city = _normalize_city_code(city)
+    
     results = [h for h in HOTELS if h['city'] == city]
     logger.info(f"Hotel search: {city} -> {len(results)} results")
     return results
 
 
+def _normalize_city_code(city: str) -> str:
+    """Normalize city name to airport code format used in HOTELS data.
+    
+    Maps city names to airport codes:
+    - London, LONDON -> LON
+    - New York, NYC, New York City -> NYC
+    - San Francisco, SFO, SF -> SFO
+    - Dubai, DXB -> DXB
+    - Delhi, DEL -> DEL
+    - Mumbai, BOM -> BOM
+    """
+    city = city.strip().upper()
+    
+    # City name mappings
+    city_mappings = {
+        'LONDON': 'LON',
+        'NEW YORK': 'NYC',
+        'NEW YORK CITY': 'NYC',
+        'SAN FRANCISCO': 'SFO',
+        'SF': 'SFO',
+        'DUBAI': 'DXB',
+        'DELHI': 'DEL',
+        'MUMBAI': 'BOM',
+        'BANGALORE': 'BLR',
+        'BENGALURU': 'BLR',
+        'CHENNAI': 'MAA',
+        'HYDERABAD': 'HYD',
+        'KOLKATA': 'CCU',
+        'PARIS': 'PAR',
+        'TOKYO': 'TYO',
+        'SYDNEY': 'SYD',
+    }
+    
+    # Check if it's already a code (3 letters) or if we have a mapping
+    if len(city) == 3 and city.isalpha():
+        # Already a code, return as-is
+        return city
+    elif city in city_mappings:
+        return city_mappings[city]
+    else:
+        # Try to extract first 3 letters as code, or return uppercase as-is
+        return city[:3] if len(city) >= 3 else city
+
+
 @tool
 def compare_hotels_tool(query: Dict[str, Any]) -> Dict[str, Any]:
     """Compare multiple hotels by IDs. Returns comparison with prices and details."""
+    # Unwrap if params are nested under 'query' key (from LangChain tool invocation)
+    if 'query' in query and isinstance(query['query'], dict):
+        query = query['query']
+    
     hotel_ids = query.get('hotel_ids', [])
     
     if not hotel_ids:
@@ -51,6 +112,10 @@ def compare_hotels_tool(query: Dict[str, Any]) -> Dict[str, Any]:
 @tool
 def book_hotel_tool(query: Dict[str, Any]) -> Dict[str, Any]:
     """Book a hotel by ID. Returns booking confirmation."""
+    # Unwrap if params are nested under 'query' key (from LangChain tool invocation)
+    if 'query' in query and isinstance(query['query'], dict):
+        query = query['query']
+    
     hotel_id = query.get('hotel_id')
     guest_name = query.get('guest_name', 'Guest')
     check_in = query.get('check_in', '')
@@ -96,14 +161,32 @@ class HotelBookingAgent(BaseAgent):
         self, 
         params: Dict[str, Any], 
         ctx: "TravelContext"
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """Search for hotels and return the best option based on context criteria."""
-        all_hotels = self._call_tool('search_hotels', params)
+        try:
+            all_hotels = self._call_tool('search_hotels', params)
+        except Exception as e:
+            logger.error(f"Hotel search failed: {e}")
+            return {"reservation": None, "options": [], "error": str(e)}
         
-        if not all_hotels or isinstance(all_hotels, dict) and "error" in all_hotels:
-            return None
+        # Handle error case (dict with error key)
+        if isinstance(all_hotels, dict) and "error" in all_hotels:
+            return {"reservation": None, "options": [], "error": all_hotels["error"]}
         
-        return self._select_best(all_hotels, ctx.criteria)
+        # Ensure all_hotels is a list
+        if not isinstance(all_hotels, list):
+            logger.warning(f"Hotel search returned non-list result: {type(all_hotels)}")
+            all_hotels = []
+        
+        if not all_hotels:
+            logger.warning(f"No hotels found for params: {params}")
+            return {"reservation": None, "options": []}
+        
+        selected = self._select_best(all_hotels, ctx.criteria)
+        return {
+            "reservation": selected,
+            "options": all_hotels
+        }
     
     def execute(self, task: str, params: Dict[str, Any], ctx: Optional["TravelContext"] = None) -> Any:
         """Execute hotel booking task"""

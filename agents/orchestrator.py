@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, List, TYPE_CHECKING
 import json
 import time
 
-from agents.planner import plan_trip
+from agents.planner import TravelPlanner, plan_trip
 from agents.llm_provider import LLMProvider, create_llm_provider, extract_token_usage
 from agents.flight_booking_agent import FlightBookingAgent
 from agents.hotel_booking_agent import HotelBookingAgent
@@ -63,6 +63,7 @@ class Orchestrator:
             'ItineraryAgent': ItineraryAgent(llm=self.llm),
             'PaymentAgent': PaymentAgent(llm=self.llm),
         }
+        self.planner = TravelPlanner(llm=self.llm)
         logger.info(f"Orchestrator initialized with {len(self.agents)} agents")
     
     # =========================================================================
@@ -114,106 +115,189 @@ class Orchestrator:
     # Context-Aware High-Level Methods (per DD-1, DD-2)
     # =========================================================================
     
-    def plan_trip(self, query: str, ctx: "TravelContext", include_summary: bool = True) -> Dict[str, Any]:
+    def execute_plan(
+        self,
+        plan: "ExecutionPlan",
+        ctx: "TravelContext",
+        include_summary: bool = True,
+    ) -> Dict[str, Any]:
         """
-        Plan a trip from natural language query.
+        Execute an ExecutionPlan by running agents and creating itinerary.
         
-        Parses the query, runs appropriate agents with context-aware selection,
-        and creates a draft itinerary.
+        This is the pure execution method - it assumes planning is already done.
+        The plan should have status='executable' before calling this method.
         
-        Uses tiered preference loading:
-        - Summary (~50 tokens) is always loaded for basic personalization
-        - Full preferences (~500 tokens) available via tool if model needs them
+        Args:
+            plan: ExecutionPlan from TravelPlanner.create_plan_from_query()
+            ctx: TravelContext with session, traveler_id, criteria
+            include_summary: Whether to generate LLM summary
+        
+        Returns:
+            Dict with itinerary_id, options, reservations, and summary
         """
-        # Load preference summary (always, fast ~5ms from cache)
-        preference_summary = self._get_preference_summary(ctx)
+        from agents.planner_schemas import ExecutionPlan
         
-        logger.info(f"Planning trip: traveler={ctx.traveler_id}, criteria={ctx.criteria.value}, mode={PREFERENCE_LOADING_MODE.value}, prefs={preference_summary[:50]}...")
-        ctx.original_query = query
+        logger.info(
+            f"Orchestrator: Executing plan",
+            extra={
+                "plan_id": plan.plan_metadata.plan_id,
+                "task_count": len(plan.tasks),
+                "criteria": ctx.criteria.value,
+            },
+        )
+        start_time = time.perf_counter()
         
-        # Store preference summary in context for later use
-        ctx.preference_summary = preference_summary
+        # Execution State
+        context = {}  # Map agent_name -> result (for dependency injection compatibility)
+        results_map = {} # Map task_id -> result
         
-        # Ensure LLM is available for NL parsing
-        llm = ctx.llm or self.llm
-        if llm is None:
-            raise LLMUnavailableError("LLM is required for natural language trip planning")
-        
-        # Parse query to intent based on preference loading mode
-        if PREFERENCE_LOADING_MODE == PreferenceLoadingMode.TOOL_BINDING:
-            # Tool binding mode: LLM can call load_full_preferences for detailed prefs
-            intent = self._interpret_query_with_tool_binding(query, llm, preference_summary, ctx)
-        else:
-            # Summary-only mode: just include summary in prompt (default, faster)
-            intent = self._interpret_query_with_preferences(query, llm, preference_summary)
-        
-        # Run agents with context-aware selection (DD-3: Selection in Agents)
-        flight_reservation = None
-        hotel_reservation = None
-        car_reservation = None
-        
+        # Collectors for final response
         flight_options = []
         hotel_options = []
         car_options = []
+        flight_reservation = None
+        hotel_reservation = None
+        car_reservation = None
+        itinerary = None
         
-        needs = intent.get('needs', [])
+        # Execute tasks sequentially
+        for task in plan.tasks:
+            agent_name = task.agent
+            action = task.action
+            
+            logger.debug(f"Orchestrator: Processing task {task.id}: {agent_name}.{action}")
+            
+            # 1. Enrich parameters using context from previous tasks
+            # We construct a temporary 'current_task' dict to mimic legacy run_intent structure for compatibility
+            current_task_info = {"task": action} 
+            params = self._enrich_params(task.params, context, current_task_info)
+            
+            # 2. Get Agent
+            if agent_name not in self.agents:
+                logger.error(f"Unknown agent in plan: {agent_name}")
+                continue # Or raise error? Continue ensures partial failure handling.
+            
+            agent = self.agents[agent_name]
+            
+            # 3. Execute with Context
+            try:
+                # Pass ctx to allow agent to handle selection logic ("Smart Agent")
+                result = agent.execute(action, params, ctx)
+                
+                # 4. Store Result
+                results_map[task.id] = result
+                context[agent_name] = result # Update context for subsequent tasks
+                
+                # 5. Extract specific data for API response
+                if agent_name == "FlightBookingAgent":
+                    if isinstance(result, dict):
+                        flight_options = result.get("options", []) or []
+                        flight_reservation = result.get("reservation")
+                        # If result was just a list (legacy), treat as options
+                        if not flight_options and isinstance(result, list):
+                            flight_options = result
+                
+                elif agent_name == "HotelBookingAgent":
+                    if isinstance(result, dict):
+                        hotel_options = result.get("options", []) or []
+                        hotel_reservation = result.get("reservation")
+                        if not hotel_options and isinstance(result, list):
+                            hotel_options = result
+                            
+                elif agent_name == "CarRentalAgent":
+                    if isinstance(result, dict):
+                        car_options = result.get("options", []) or []
+                        car_reservation = result.get("reservation")
+                        if not car_options and isinstance(result, list):
+                            car_options = result
+                
+                elif agent_name == "ItineraryAgent" and action == "build_itinerary":
+                    # ItineraryAgent.build returns the Itinerary object directly
+                    itinerary = result
+                    if hasattr(itinerary, 'id'):
+                        ctx.itinerary_id = itinerary.id
+                        ctx.itinerary = itinerary
+            
+            except Exception as e:
+                logger.error(f"Task execution failed: {agent_name}.{action}: {e}")
+                # We continue execution if possible, but plan might be compromised.
         
-        # Search flights if needed (search once, then select from results)
-        if 'flight' in needs:
-            flight_params = {
-                'origin': intent.get('from', ''),
-                'destination': intent.get('to', ''),
-                'date': intent.get('date', '')
-            }
-            all_flights = self.agents['FlightBookingAgent'].execute('search_flights', flight_params)
-            if isinstance(all_flights, list) and all_flights:
-                flight_options = all_flights
-                # Select best from existing results (no duplicate search)
-                selected = self.agents['FlightBookingAgent']._select_best(all_flights, ctx.criteria)
-                if selected:
-                    flight_reservation = {
-                        **selected,
-                        "origin": selected.get("from", selected.get("origin")),
-                        "destination": selected.get("to", selected.get("destination")),
-                    }
+        execution_duration_ms = (time.perf_counter() - start_time) * 1000
         
-        # Search hotels if needed (search once, then select from results)
-        if 'hotel' in needs:
-            hotel_params = {'city': intent.get('to', '')}
-            all_hotels = self.agents['HotelBookingAgent'].execute('search_hotels', hotel_params)
-            if isinstance(all_hotels, list) and all_hotels:
-                hotel_options = all_hotels
-                hotel_reservation = self.agents['HotelBookingAgent']._select_best(all_hotels, ctx.criteria)
+        # Safety fallback: If searches completed but no itinerary was built, try to build one automatically
+        has_searches = (flight_reservation or flight_options) or (hotel_reservation or hotel_options) or (car_reservation or car_options)
+        if not itinerary and has_searches:
+            logger.warning("Plan execution finished without building itinerary, but searches completed. Attempting automatic itinerary build...")
+            try:
+                itinerary_agent = self.agents.get("ItineraryAgent")
+                if itinerary_agent:
+                    # Build itinerary from available reservations (prefer reservations, fallback to first option)
+                    build_params = {}
+                    if flight_reservation:
+                        build_params["flight_reservation"] = flight_reservation
+                    elif flight_options:
+                        # Use first option if no reservation was selected
+                        build_params["flight_reservation"] = flight_options[0]
+                        logger.debug("Using first flight option for auto-build")
+                    
+                    if hotel_reservation:
+                        build_params["hotel_reservation"] = hotel_reservation
+                    elif hotel_options:
+                        build_params["hotel_reservation"] = hotel_options[0]
+                        logger.debug("Using first hotel option for auto-build")
+                    
+                    if car_reservation:
+                        build_params["car_reservation"] = car_reservation
+                    elif car_options:
+                        build_params["car_reservation"] = car_options[0]
+                        logger.debug("Using first car option for auto-build")
+                    
+                    if build_params:
+                        itinerary = itinerary_agent.execute("build_itinerary", build_params, ctx)
+                        if itinerary and hasattr(itinerary, 'id'):
+                            ctx.itinerary_id = itinerary.id
+                            ctx.itinerary = itinerary
+                            logger.info(f"Auto-built itinerary: {itinerary.id} from {len(build_params)} reservation(s)")
+            except Exception as e:
+                logger.error(f"Failed to auto-build itinerary: {e}")
         
-        # Search cars if needed (search once, then select from results)
-        if 'car' in needs:
-            car_params = {'city': intent.get('to', '')}
-            all_cars = self.agents['CarRentalAgent'].execute('search_cars', car_params)
-            if isinstance(all_cars, list) and all_cars:
-                car_options = all_cars
-                car_reservation = self.agents['CarRentalAgent']._select_best(all_cars, ctx.criteria)
-        
-        # Build itinerary with selected reservations
-        itinerary_agent = self.agents['ItineraryAgent']
-        itinerary = itinerary_agent.build(
-            flight_reservation=flight_reservation,
-            hotel_reservation=hotel_reservation,
-            car_reservation=car_reservation,
-            ctx=ctx
+        # Handle case where itinerary still wasn't built (e.g. error or empty plan)
+        if not itinerary:
+             logger.warning("Plan execution finished without building itinerary")
+             # Return partial results with all expected keys (None for missing values)
+             preference_summary = getattr(ctx, 'preference_summary', None) or ""
+             return {
+                "itinerary_id": None,
+                "flight_options": flight_options,
+                "hotel_options": hotel_options,
+                "car_options": car_options,
+                "flight_reservation": flight_reservation,
+                "hotel_reservation": hotel_reservation,
+                "car_reservation": car_reservation,
+                "selection_criteria_used": ctx.criteria.value,
+                "preference_summary": preference_summary,
+                "summary": f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars. Plan execution failed to produce itinerary.",
+                "query": ctx.original_query or "",
+             }
+
+        logger.info(
+            f"Orchestrator: Plan executed in {_format_duration(execution_duration_ms)}",
+            extra={
+                "itinerary_id": itinerary.id,
+                "total_cost": itinerary.total_cost,
+                "flights": len(flight_options),
+                "hotels": len(hotel_options),
+                "cars": len(car_options),
+            },
         )
-        
-        # Update context with created itinerary
-        ctx.itinerary_id = itinerary.id
-        ctx.itinerary = itinerary
-        
-        logger.info(f"Created itinerary: id={itinerary.id}, total_cost=${itinerary.total_cost}")
         
         # Generate summary
         summary = f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars"
+        preference_summary = getattr(ctx, 'preference_summary', None) or ""
         
+        llm = ctx.llm or self.llm
         if include_summary and llm:
             try:
-                # Prepare results for formatter (include preference context)
                 results = {
                     "flight": flight_reservation,
                     "hotel": hotel_reservation,
@@ -223,9 +307,20 @@ class Orchestrator:
                 }
                 
                 formatter = ResponseFormatter(llm=llm)
-                summary = formatter.format_results(results, intent)
+                # We need intent for formatter. Plan doesn't strictly have 'intent' dict anymore.
+                # But we have original query.
+                # Or we can reconstruct intent from tasks?
+                # The generic formatter expects 'intent' dict with 'needs', 'from', 'to'.
+                # We can mock it or extract from context.
+                # Let's use metadata from valid tasks or ctx.original_query.
+                # For now, pass empty intent or reconstruct basic structure.
+                intent_stub = {
+                    "query": ctx.original_query,
+                    "needs": [t.agent.replace("BookingAgent", "").replace("RentalAgent", "").lower() for t in plan.tasks] 
+                }
+                summary = formatter.format_results(results, intent_stub)
             except Exception as e:
-                logger.warning(f"Failed to generate LLM summary: {e}")
+                logger.warning(f"Orchestrator: Failed to generate LLM summary: {e}")
         
         return {
             "itinerary_id": itinerary.id,
@@ -238,8 +333,42 @@ class Orchestrator:
             "selection_criteria_used": ctx.criteria.value,
             "preference_summary": preference_summary,
             "summary": summary,
-            "query": query,
+            "query": ctx.original_query or "",
         }
+    
+    def plan_trip(self, query: str, ctx: "TravelContext", include_summary: bool = True) -> Dict[str, Any]:
+        """
+        Plan a trip from natural language query.
+        
+        .. deprecated::
+            Use TravelPlanner.create_plan_from_query() + Orchestrator.execute_plan() instead.
+            This method will be removed in a future version.
+        
+        Delegates to new Planner flow.
+        """
+        logger.warning("Calling deprecated method Orchestrator.plan_trip")
+        
+        # 1. Create plan using Planner (which now handles NL parsing)
+        plan = self.planner.create_plan_from_query(query, ctx)
+        
+        # 2. Handle clarification
+        if plan.status == "needs_clarification":
+            logger.info(
+                "Planner requires clarification",
+                extra={
+                    "plan_id": plan.plan_metadata.plan_id,
+                    "missing_fields": [mi.field for mi in plan.missing_info],
+                },
+            )
+            return {
+                "status": "needs_clarification",
+                "missing_info": [mi.model_dump() for mi in plan.missing_info],
+                "plan_id": plan.plan_metadata.plan_id,
+                "query": query,
+            }
+            
+        # 3. Execute plan
+        return self.execute_plan(plan, ctx, include_summary=include_summary)
     
     def modify_itinerary(self, instruction: str, ctx: "TravelContext") -> Dict[str, Any]:
         """
@@ -324,282 +453,7 @@ Respond with ONLY the JSON object."""
         """Cancel an itinerary."""
         return self.agents['ItineraryAgent'].cancel(ctx)
     
-    # =========================================================================
-    # NL Interpretation (DD-1: Moved from main.py)
-    # =========================================================================
-    
-    def _interpret_query_with_preferences(self, text: str, llm: LLMProvider, preference_summary: str) -> dict:
-        """
-        Use LLM to parse natural language into structured intent, with preference context.
-        
-        Args:
-            text: User's natural language query
-            llm: LLM provider
-            preference_summary: Compact preference summary (~50 tokens)
-        
-        Returns:
-            Structured intent dict
-        """
-        prompt = (
-            "Parse the following user query about travel booking into a structured intent format.\n\n"
-            f'User Query: "{text}"\n\n'
-            f"Traveler Preferences: {preference_summary}\n\n"
-            "Extract the following information:\n"
-            "- needs: List of services needed (flight, hotel, car, itinerary)\n"
-            "- from: Origin airport code (3 letters, uppercase)\n"
-            "- to: Destination airport code (3 letters, uppercase)\n"
-            "- date: Travel date in YYYY-MM-DD format\n\n"
-            "Note: Consider the traveler's preferences when interpreting ambiguous requests.\n"
-            "Return ONLY a valid JSON object with these fields. Example:\n"
-            '{\n'
-            '  "needs": ["flight", "hotel", "car", "itinerary"],\n'
-            '  "from": "NYC",\n'
-            '  "to": "LON",\n'
-            '  "date": "2025-08-12"\n'
-            '}'
-        )
-        
-        try:
-            response = llm.invoke_structured(
-                prompt,
-                response_format={
-                    "type": "object",
-                    "properties": {
-                        "needs": {"type": "array", "items": {"type": "string"}},
-                        "from": {"type": "string"},
-                        "to": {"type": "string"},
-                        "date": {"type": "string"}
-                    }
-                }
-            )
-            
-            # Handle response format
-            if isinstance(response, dict):
-                if "raw_response" in response:
-                    try:
-                        return json.loads(response["raw_response"])
-                    except Exception:
-                        return self._interpret_rule_based(text)
-                else:
-                    intent = {
-                        "needs": response.get("needs", []),
-                        "from": response.get("from", ""),
-                        "to": response.get("to", ""),
-                        "date": response.get("date", "")
-                    }
-                    return {k: v for k, v in intent.items() if v or k == "needs"}
-            else:
-                return self._interpret_rule_based(text)
-        
-        except Exception as e:
-            logger.warning(f"LLM parsing failed: {e}, falling back to rule-based parser")
-            return self._interpret_rule_based(text)
-    
-    def _interpret_query_with_tool_binding(
-        self, 
-        text: str, 
-        llm: LLMProvider, 
-        preference_summary: str,
-        ctx: "TravelContext"
-    ) -> dict:
-        """
-        Use LLM with tool binding to parse query. LLM can call load_full_preferences
-        if it needs detailed information (loyalty numbers, dietary restrictions, etc.).
-        
-        Args:
-            text: User's natural language query
-            llm: LLM provider
-            preference_summary: Compact preference summary (~50 tokens)
-            ctx: TravelContext for traveler_id
-        
-        Returns:
-            Structured intent dict
-        """
-        logger.info(f"Using tool binding mode for query interpretation")
-        
-        # Bind the preference tool to the LLM
-        try:
-            llm_with_tools = llm.llm.bind_tools([load_full_preferences])
-        except Exception as e:
-            logger.warning(f"Failed to bind tools: {e}, falling back to summary-only mode")
-            return self._interpret_query_with_preferences(text, llm, preference_summary)
-        
-        # Track first LLM call timing
-        start_time = time.perf_counter()
-        logger.info("LLM (tool-binding) call: starting with summary + tool binding")
-        prompt = (
-            "Parse the following user query about travel booking into a structured intent format.\n\n"
-            f'User Query: "{text}"\n\n'
-            f"Traveler ID: {ctx.traveler_id}\n"
-            f"Traveler Preferences Summary: {preference_summary}\n\n"
-            "If you need detailed preferences (loyalty program numbers, dietary restrictions, "
-            "accessibility needs, or past booking patterns), use the load_full_preferences tool.\n\n"
-            "Extract the following information:\n"
-            "- needs: List of services needed (flight, hotel, car, itinerary)\n"
-            "- from: Origin airport code (3 letters, uppercase)\n"
-            "- to: Destination airport code (3 letters, uppercase)\n"
-            "- date: Travel date in YYYY-MM-DD format\n\n"
-            "Return ONLY a valid JSON object with these fields."
-        )
-        
-        try:
-            # First LLM call with tools
-            response = llm_with_tools.invoke(prompt)
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            token_info = extract_token_usage(response)
-            if token_info:
-                logger.info(f"⏱ LLM (tool-binding) call: {_format_duration(duration_ms)} | tokens: {token_info['input']} in, {token_info['output']} out, {token_info['total']} total")
-            else:
-                logger.info(f"⏱ LLM (tool-binding) call: {_format_duration(duration_ms)}")
-            logger.info(f"LLM (tool-binding) call complete in {_format_duration(duration_ms)}")
-            
-            # Check if model called the tool
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                logger.info(f"Model requested {len(response.tool_calls)} tool call(s)")
-                
-                for tool_call in response.tool_calls:
-                    tool_name = tool_call.get('name', tool_call.get('function', {}).get('name', ''))
-                    tool_args = tool_call.get('args', tool_call.get('function', {}).get('arguments', {}))
-                    
-                    if tool_name == 'load_full_preferences':
-                        # Execute the tool
-                        traveler_id = tool_args.get('traveler_id', ctx.traveler_id)
-                        logger.info(f"Executing load_full_preferences for {traveler_id}")
-                        tool_start = time.perf_counter()
-                        
-                        full_prefs = load_full_preferences.invoke({"traveler_id": traveler_id})
-                        tool_duration_ms = (time.perf_counter() - tool_start) * 1000
-                        logger.info(f"Tool load_full_preferences completed in {_format_duration(tool_duration_ms)}")
-                        
-                        # Store full preferences in context
-                        ctx.full_preferences = full_prefs
-                        
-                        # Continue with enriched prompt
-                        enriched_prompt = (
-                            f"{prompt}\n\n"
-                            f"Full Preferences Loaded:\n{json.dumps(full_prefs, indent=2)}"
-                        )
-                        
-                        # Second LLM call with full preferences
-                        logger.info("LLM (tool-binding) enriched call: starting with full preferences")
-                        second_start = time.perf_counter()
-                        response = llm.llm.invoke(enriched_prompt)
-                        second_duration_ms = (time.perf_counter() - second_start) * 1000
-                        token_info = extract_token_usage(response)
-                        if token_info:
-                            logger.info(f"⏱ LLM (tool-binding, enriched) call: {_format_duration(second_duration_ms)} | tokens: {token_info['input']} in, {token_info['output']} out, {token_info['total']} total")
-                        else:
-                            logger.info(f"⏱ LLM (tool-binding, enriched) call: {_format_duration(second_duration_ms)}")
-                        logger.info(f"LLM (tool-binding, enriched) call complete in {_format_duration(second_duration_ms)}")
-            
-            # Parse the response
-            content = response.content if hasattr(response, 'content') else str(response)
-            
-            # Extract JSON from response
-            if "```json" in content:
-                json_start = content.find("```json") + 7
-                json_end = content.find("```", json_start)
-                content = content[json_start:json_end].strip()
-            elif "```" in content:
-                json_start = content.find("```") + 3
-                json_end = content.find("```", json_start)
-                content = content[json_start:json_end].strip()
-            
-            intent = json.loads(content)
-            return {
-                "needs": intent.get("needs", []),
-                "from": intent.get("from", ""),
-                "to": intent.get("to", ""),
-                "date": intent.get("date", "")
-            }
-        
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON parsing failed in tool binding mode: {e}, falling back to rule-based")
-            return self._interpret_rule_based(text)
-        except Exception as e:
-            logger.warning(f"Tool binding mode failed: {e}, falling back to summary-only mode")
-            return self._interpret_query_with_preferences(text, llm, preference_summary)
-    
-    def _interpret_query(self, text: str, llm: LLMProvider) -> dict:
-        """Use LLM to parse natural language into structured intent (legacy, no preferences)."""
-        
-        prompt = (
-            "Parse the following user query about travel booking into a structured intent format.\n\n"
-            f'User Query: "{text}"\n\n'
-            "Extract the following information:\n"
-            "- needs: List of services needed (flight, hotel, car, itinerary)\n"
-            "- from: Origin airport code (3 letters, uppercase)\n"
-            "- to: Destination airport code (3 letters, uppercase)\n"
-            "- date: Travel date in YYYY-MM-DD format\n\n"
-            "Return ONLY a valid JSON object with these fields. Example:\n"
-            '{\n'
-            '  "needs": ["flight", "hotel", "car", "itinerary"],\n'
-            '  "from": "NYC",\n'
-            '  "to": "LON",\n'
-            '  "date": "2025-08-12"\n'
-            '}'
-        )
 
-        try:
-            response = llm.invoke_structured(
-                prompt,
-                response_format={
-                    "type": "object",
-                    "properties": {
-                        "needs": {"type": "array", "items": {"type": "string"}},
-                        "from": {"type": "string"},
-                        "to": {"type": "string"},
-                        "date": {"type": "string"}
-                    }
-                }
-            )
-            
-            # Handle response format
-            if isinstance(response, dict):
-                if "raw_response" in response:
-                    try:
-                        return json.loads(response["raw_response"])
-                    except Exception:
-                        return self._interpret_rule_based(text)
-                else:
-                    intent = {
-                        "needs": response.get("needs", []),
-                        "from": response.get("from", ""),
-                        "to": response.get("to", ""),
-                        "date": response.get("date", "")
-                    }
-                    return {k: v for k, v in intent.items() if v or k == "needs"}
-            else:
-                return self._interpret_rule_based(text)
-        
-        except Exception as e:
-            logger.warning(f"LLM parsing failed: {e}, falling back to rule-based parser")
-            return self._interpret_rule_based(text)
-    
-    def _interpret_rule_based(self, text: str) -> dict:
-        """Simple rule-based NL parser (fallback when LLM fails)."""
-        import re
-        
-        text_lower = text.lower()
-        intent = {'needs': []}
-        
-        if 'flight' in text_lower or 'fly' in text_lower:
-            intent['needs'].append('flight')
-        if 'hotel' in text_lower or 'stay' in text_lower:
-            intent['needs'].append('hotel')
-        if 'car' in text_lower or 'rental' in text_lower:
-            intent['needs'].append('car')
-        
-        m = re.search(r'from ([a-z]{3}) to ([a-z]{3})', text_lower)
-        if m:
-            intent['from'] = m.group(1).upper()
-            intent['to'] = m.group(2).upper()
-        
-        d = re.search(r'(\d{4}-\d{2}-\d{2})', text)
-        if d:
-            intent['date'] = d.group(1)
-        
-        return intent
     
     # =========================================================================
     # Legacy Methods (for backward compatibility)
@@ -613,48 +467,59 @@ Respond with ONLY the JSON object."""
         For new code, use plan_trip() with TravelContext.
         """
         logger.info(f"Running intent: needs={intent.get('needs', [])}")
-        
-        # Use LLM-based planner to create a plan
-        tasks = plan_trip(intent, llm=self.llm)
-        
-        logger.info(f"Planned {len(tasks)} tasks")
-        print(f"Planned {len(tasks)} tasks:")
-        for i, task in enumerate(tasks, 1):
-            task_info = f"{task.get('agent')} -> {task.get('task')}"
-            print(f"  {i}. {task_info}")
-        
-        results = {}
-        context = {}  # Store results for context-dependent tasks
-        
-        # Execute tasks in order
-        for task in tasks:
-            agent_name = task.get('agent')
-            task_name = task.get('task')
-            params = task.get('params', {})
-            
-            # Enrich params with context from previous tasks
-            params = self._enrich_params(params, context, task)
-            
-            # Route to appropriate agent
-            if agent_name in self.agents:
-                agent = self.agents[agent_name]
-                try:
-                    result = agent.execute(task_name, params)
-                    logger.debug(f"Task {agent_name}.{task_name} completed")
-                    results[f"{agent_name}.{task_name}"] = result
-                    context[agent_name] = result
-                except Exception as e:
-                    logger.error(f"Task {agent_name}.{task_name} failed: {e}")
-                    error_result = {"error": str(e), "agent": agent_name, "task": task_name}
+
+        # Build plan via deterministic planner
+        plan = self.planner.create_plan(intent, traveler_id=intent.get("traveler_id", ""))
+
+        if plan.status == "needs_clarification":
+            logger.info("Plan requires clarification; returning missing_info.")
+            return {
+                "status": plan.status,
+                "missing_info": [mi.model_dump() for mi in plan.missing_info],
+                "plan_id": plan.plan_metadata.plan_id,
+            }
+
+        # Execute tasks respecting dependencies (simple topo by readiness)
+        results: Dict[str, Any] = {}
+        context: Dict[str, Any] = {}
+        completed = set()
+        remaining = {t.id: t for t in plan.tasks}
+
+        while remaining:
+            ready = [
+                t for t_id, t in remaining.items() if all(dep in completed for dep in t.dependencies)
+            ]
+            if not ready:
+                logger.error("Circular dependency detected in plan tasks")
+                break
+
+            for task in ready:
+                agent_name = task.agent
+                task_name = task.action
+                params = self._enrich_params(dict(task.params), context, {"task": task_name})
+
+                if agent_name in self.agents:
+                    agent = self.agents[agent_name]
+                    try:
+                        result = agent.execute(task_name, params)
+                        logger.debug(f"Task {agent_name}.{task_name} completed")
+                        results[f"{agent_name}.{task_name}"] = result
+                        context[agent_name] = result
+                    except Exception as e:
+                        logger.error(f"Task {agent_name}.{task_name} failed: {e}")
+                        error_result = {"error": str(e), "agent": agent_name, "task": task_name}
+                        results[f"{agent_name}.{task_name}"] = error_result
+                        context[agent_name] = error_result
+                else:
+                    logger.error(f"Unknown agent: {agent_name}")
+                    error_result = {"error": f"Unknown agent: {agent_name}"}
                     results[f"{agent_name}.{task_name}"] = error_result
-                    context[agent_name] = error_result
-            else:
-                logger.error(f"Unknown agent: {agent_name}")
-                error_result = {"error": f"Unknown agent: {agent_name}"}
-                results[f"{agent_name}.{task_name}"] = error_result
-        
+
+                completed.add(task.id)
+                remaining.pop(task.id, None)
+
         logger.info(f"Intent completed: {len(results)} tasks executed")
-        return results
+        return {"status": "executed", "results": results, "plan_id": plan.plan_metadata.plan_id}
     
     def _enrich_params(self, params: Dict[str, Any], context: Dict[str, Any], 
                       current_task: Dict[str, Any]) -> Dict[str, Any]:
@@ -663,8 +528,15 @@ Respond with ONLY the JSON object."""
 
         def _select_booking(value):
             """Pick a single booking dict if a list was returned by a search."""
+            # Handle rich result from context-aware execution
+            if isinstance(value, dict) and "reservation" in value:
+                return value["reservation"]
+            
+            # Handle legacy list result
             if isinstance(value, list) and value:
                 return value[0]
+            
+            # Handle direct dict result
             if isinstance(value, dict):
                 return value
             return None

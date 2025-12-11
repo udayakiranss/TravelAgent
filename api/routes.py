@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
 from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
@@ -39,7 +40,7 @@ from api.schemas import (
     HotelOption,
     CarOption,
 )
-from api.dependencies import get_db, get_llm, get_context, get_orchestrator
+from api.dependencies import get_db, get_llm, get_context, get_orchestrator, get_planner
 from database.repository import (
     TravelItineraryRepository,
     ChatMessageRepository,
@@ -53,6 +54,7 @@ from database.repository import (
 from database.models import Itinerary
 from agents.llm_provider import LLMProvider
 from agents.orchestrator import Orchestrator
+from agents.planner import TravelPlanner
 from utils.logger import get_logger
 from tools.search_tools import search_flights as tool_search_flights
 from tools.search_tools import search_hotels as tool_search_hotels
@@ -524,43 +526,96 @@ def cancel_itinerary(
 def plan_trip(
     request: NaturalLanguageQueryRequest,
     ctx: TravelContext = Depends(get_context),
+    planner: TravelPlanner = Depends(get_planner),
     orchestrator: Orchestrator = Depends(get_orchestrator),
 ):
     """
     Plan a trip from natural language query.
     
-    Delegates to Orchestrator.plan_trip() which:
-    1. Parses the NL query to intent (DD-1)
-    2. Runs agents with context-aware selection (DD-3)
-    3. Creates draft itinerary
+    Flow:
+    1. Planner.create_plan_from_query() - NL parsing → ExecutionPlan
+    2. Orchestrator.execute_plan() - Run agents → Create itinerary
     
     Returns itinerary_id, all options, selected reservations, and summary.
     """
-    logger.info(f"Plan trip request: query='{request.query[:50]}...'" if len(request.query) > 50 else f"Plan trip request: query='{request.query}'")
+    logger.info(
+        f"Plan trip request",
+        extra={
+            "query_preview": request.query[:50] + "..." if len(request.query) > 50 else request.query,
+            "traveler_id": request.traveler_id,
+        },
+    )
     
-    # Populate context from request (DD-2)
+    # Populate context from request
     ctx.traveler_id = request.traveler_id
     ctx.criteria = request.selection_criteria or DEFAULT_SELECTION_CRITERIA
+    ctx.original_query = request.query
     
-    logger.info(f"Traveler: {ctx.traveler_id}, Criteria: {ctx.criteria.value}")
+    logger.info(f"Route: traveler={ctx.traveler_id}, criteria={ctx.criteria.value}")
     
     try:
-        # Delegate to orchestrator (thin route)
-        result = orchestrator.plan_trip(request.query, ctx, include_summary=request.include_summary)
+        # Step 1: Create plan from NL query (Planner handles NL parsing + validation)
+        plan = planner.create_plan_from_query(request.query, ctx)
         
-        logger.info(f"Plan trip completed: itinerary_id={result['itinerary_id']}")
+        # Handle clarification path from deterministic planner
+        if plan.status == "needs_clarification":
+            logger.info(
+                "Plan requires clarification",
+                extra={
+                    "plan_id": plan.plan_metadata.plan_id,
+                    "missing_fields": [mi.field for mi in plan.missing_info],
+                },
+            )
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "code": "MISSING_INFORMATION",
+                    "message": "Additional information required to plan the trip.",
+                    "missing_info": [mi.model_dump() for mi in plan.missing_info],
+                    "plan_id": plan.plan_metadata.plan_id,
+                    "query": request.query,
+                },
+            )
+        
+        # Step 2: Execute plan (Orchestrator runs agents and creates itinerary)
+        logger.info(
+            f"Route: Executing plan",
+            extra={"plan_id": plan.plan_metadata.plan_id, "task_count": len(plan.tasks)},
+        )
+        result = orchestrator.execute_plan(plan, ctx, include_summary=request.include_summary)
+        
+        itinerary_id = result.get("itinerary_id")
+        logger.info(f"Route: Plan trip completed, itinerary_id={itinerary_id}")
+        
+        # Handle case where itinerary wasn't built - return partial results with warning
+        if itinerary_id is None:
+            logger.warning("Plan execution completed but no itinerary was created")
+            # Return 200 with partial results and warning message
+            return PlanResponse(
+                itinerary_id=None,
+                flight_options=result.get("flight_options", []),
+                hotel_options=result.get("hotel_options", []),
+                car_options=result.get("car_options", []),
+                flight_reservation=result.get("flight_reservation"),
+                hotel_reservation=result.get("hotel_reservation"),
+                car_reservation=result.get("car_reservation"),
+                selection_criteria_used=result.get("selection_criteria_used", ctx.criteria.value),
+                preference_summary=result.get("preference_summary"),
+                summary=result.get("summary", "Plan execution completed but no itinerary was created. Missing itinerary task in plan."),
+                query=request.query
+            )
         
         return PlanResponse(
-            itinerary_id=result["itinerary_id"],
-            flight_options=result["flight_options"],
-            hotel_options=result["hotel_options"],
-            car_options=result["car_options"],
-            flight_reservation=result["flight_reservation"],
-            hotel_reservation=result["hotel_reservation"],
-            car_reservation=result["car_reservation"],
-            selection_criteria_used=result["selection_criteria_used"],
+            itinerary_id=result.get("itinerary_id"),
+            flight_options=result.get("flight_options", []),
+            hotel_options=result.get("hotel_options", []),
+            car_options=result.get("car_options", []),
+            flight_reservation=result.get("flight_reservation"),
+            hotel_reservation=result.get("hotel_reservation"),
+            car_reservation=result.get("car_reservation"),
+            selection_criteria_used=result.get("selection_criteria_used", ctx.criteria.value),
             preference_summary=result.get("preference_summary"),
-            summary=result["summary"],
+            summary=result.get("summary", ""),
             query=request.query
         )
         
