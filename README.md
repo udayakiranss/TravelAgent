@@ -6,6 +6,7 @@ This system demonstrates a multi-agent architecture for travel booking with:
 - **Specialized agents** - Each agent handles a specific domain with multiple tools
 - **Flexible LLM integration** - Supports any foundation model (OpenAI, Anthropic, Google, etc.)
 - **Agent orchestration** - Coordinates multiple agents to fulfill complex user intents
+- **Service layer** - Encapsulates business logic behind the API routes
 - **User Preferences** - Personalized recommendations via tiered preference loading
 - **REST API** - FastAPI-based web API for building frontend applications
 - **Persistent Storage** - SQLite database with filesystem caching
@@ -114,42 +115,45 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
    - Owns NL interpretation (moved from routes for proper separation)
    - Manages `TravelContext` flow to agents
    - Delegates status transitions to ItineraryAgent
+   - Depends on Planner to produce task plans before executing agents
 
 4. **TravelContext** (`api/context.py`)
-   - Shared mutable context flowing through Routes → Orchestrator → Agents
+   - Shared mutable context flowing through Routes → Services → Orchestrator → Agents
    - Carries request-scoped data (session, LLM, traveler_id, criteria)
    - Carries conversation-scoped data (itinerary, chat_history, preferences)
    - **Stops at Agents** — Repositories only receive `session`
 
-5. **Web API** (`api/`, `main_web.py`)
-   - **Thin HTTP controllers** that delegate to Orchestrator
+5. **Service Layer** (`api/services/`)
+   - Encapsulates business logic for itineraries, preferences, search, health, conversation, and planning
+   - Keeps routes thin and testable; services coordinate with Orchestrator/Repositories
+
+6. **Web API** (`api/`, `main_web.py`)
+   - **Thin HTTP controllers** that delegate to Services
    - FastAPI-based REST API with Swagger/OpenAPI
    - SQLite persistence layer
 
-6. **MCP Server** (`mcp/server.py`)
+7. **MCP Server** (`mcp/server.py`)
    - Exposes API capabilities as **Tools** (actions) and **Resources** (read-only context)
    - Allows LLMs to plan trips, modify itineraries, and check status directly
    - Includes full request tracing and logging integration
 
 ### Request Flow
 
+**A) Planning flow (only `PlanningService`):**
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Context-Aware                        │
-│  ┌─────────┐    ┌──────────────┐    ┌────────────┐     │
-│  │ Routes  │───▶│ Orchestrator │───▶│   Agents   │     │
-│  └─────────┘    └──────────────┘    └─────┬──────┘     │
-│                                           │            │
-│         ctx: TravelContext (mutable)      │            │
-└───────────────────────────────────────────┼────────────┘
-                                            │ ctx.session only
-┌───────────────────────────────────────────┼────────────┐
-│                 Context-Unaware           ▼            │
-│                              ┌──────────────────┐      │
-│                              │   Repositories   │      │
-│                              └──────────────────┘      │
-└────────────────────────────────────────────────────────┘
+Routes → Services (PlanningService) → Planner → Orchestrator → Repositories
+             (builds plan)           (executes plan with ctx.session)
 ```
+
+**B) Non-planning flows (all other services):**
+```
+Routes → Services (Itinerary/Preference/Search/Health/Conversation) → Orchestrator/Repositories
+                                                   (executes or persists with ctx.session)
+```
+
+Notes:
+- Planner is used only by `PlanningService.plan_trip`; other services skip Planner.
+- Orchestrator always uses `ctx.session` when interacting with repositories/agents.
 
 ### Specialized Agents
 
@@ -376,10 +380,28 @@ travel-agents/
 │   └── router.py               # Legacy router
 ├── api/
 │   ├── __init__.py
-│   ├── routes.py               # API endpoints (itineraries + preferences)
+│   ├── routes/                 # Modular FastAPI routers
+│   │   ├── __init__.py         # Registers all sub-routers
+│   │   ├── health.py           # /health
+│   │   ├── search.py           # /search/*
+│   │   ├── itineraries.py      # /itineraries/*
+│   │   ├── preferences.py      # /preferences/*
+│   │   └── agent.py            # /agent/plan, /itineraries/{id}/modify
+│   ├── routes.py.old           # Deprecated legacy routes (kept for reference)
+│   ├── services/               # Service layer (business logic)
+│   │   ├── __init__.py
+│   │   ├── itinerary_service.py
+│   │   ├── preference_service.py
+│   │   ├── search_service.py
+│   │   ├── health_service.py
+│   │   ├── conversation_service.py
+│   │   └── planning_service.py
+│   ├── utils/                  # Shared helpers
+│   │   ├── __init__.py
+│   │   └── response_utils.py
 │   ├── schemas.py              # Pydantic models
 │   ├── context.py              # TravelContext for request state
-│   └── dependencies.py         # FastAPI dependencies
+│   └── dependencies.py         # FastAPI dependencies and DI bindings
 ├── database/
 │   ├── __init__.py
 │   ├── models.py               # SQLModel ORM (Itinerary, UserPreferences)
@@ -399,7 +421,10 @@ travel-agents/
 │   └── USER_PREFERENCES_PLAN.md  # Architecture documentation
 ├── tests/
 │   ├── test_api.py             # API tests
-│   └── ...
+│   ├── test_services/          # Service layer unit tests
+│   ├── test_agents/            # Agent tests
+│   ├── test_core/              # Core planner/orchestrator tests
+│   └── test_integration/       # Integration flows
 ├── main.py                     # CLI demo runner
 ├── main_web.py                 # FastAPI entry point
 ├── mcp/
@@ -441,25 +466,26 @@ LOG_LEVEL=DEBUG
 
 ## Testing
 
-Run the API test suite:
+Run the test suites:
 
 ```bash
-# Run all API tests
+# Run API tests
 python -m pytest tests/test_api.py -v
 
-# Run specific test class
-python -m pytest tests/test_api.py::TestItineraryCRUD -v
+# Run service layer tests
+python -m pytest tests/test_services/ -v
 
-# Run with coverage
-python -m pytest tests/test_api.py --cov=api --cov-report=html
+# Run everything
+python -m pytest tests/ -v
+
+# Run with coverage (API + services)
+python -m pytest tests/test_api.py tests/test_services/ --cov=api --cov=api/services --cov-report=html
 ```
 
 Test coverage includes:
-- CRUD operations (create, read, update, delete)
-- Status transitions (draft → confirmed → cancelled)
-- Optimistic locking (version conflicts)
-- Pagination and filtering
+- API flows (CRUD, status transitions, optimistic locking, pagination/filtering)
 - LLM operations (with mocking)
+- Service layer business logic (itineraries, preferences, search, health, conversation, planning)
 - Integration tests (full workflows)
 
 ---

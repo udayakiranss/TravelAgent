@@ -16,6 +16,14 @@ from agents.planner import TravelPlanner
 from agents.llm_provider import create_llm_provider, LLMProvider
 from api.context import TravelContext
 from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
+from api.services import (
+    ItineraryService,
+    PreferenceService,
+    SearchService,
+    HealthService,
+    ConversationService,
+    PlanningService,
+)
 
 
 # =============================================================================
@@ -228,4 +236,99 @@ def shutdown_event():
     
     # Clear orchestrator instance
     _orchestrator_instance = None
+
+
+# =============================================================================
+# Service Dependencies
+# =============================================================================
+
+def get_itinerary_service(
+    db: Session = Depends(get_db),
+) -> ItineraryService:
+    """
+    Get ItineraryService instance for the current request.
+    
+    Args:
+        db: Database session
+    
+    Returns:
+        ItineraryService instance
+    """
+    return ItineraryService(db)
+
+
+def get_preference_service(
+    db: Session = Depends(get_db),
+) -> PreferenceService:
+    """
+    Get PreferenceService instance for the current request.
+    
+    Args:
+        db: Database session
+    
+    Returns:
+        PreferenceService instance
+    """
+    return PreferenceService(db)
+
+
+def get_search_service() -> SearchService:
+    """
+    Get SearchService instance.
+    
+    SearchService is stateless, so a single instance can be reused.
+    
+    Returns:
+        SearchService instance
+    """
+    return SearchService()
+
+
+def get_health_service(
+    db: Session = Depends(get_db),
+    llm: Optional[LLMProvider] = Depends(get_llm),
+) -> HealthService:
+    """
+    Get HealthService instance for the current request.
+    
+    Args:
+        db: Database session
+        llm: Optional LLM provider
+    
+    Returns:
+        HealthService instance
+    """
+    return HealthService(db, llm)
+
+
+def get_conversation_service(
+    db: Session = Depends(get_db),
+) -> ConversationService:
+    """
+    Get ConversationService instance for the current request.
+    
+    Args:
+        db: Database session
+    
+    Returns:
+        ConversationService instance
+    """
+    return ConversationService(db)
+
+
+def get_planning_service(
+    planner: TravelPlanner = Depends(get_planner),
+    orchestrator: Orchestrator = Depends(get_orchestrator),
+) -> PlanningService:
+    """
+    Get PlanningService instance for the current request.
+    
+    Args:
+        planner: TravelPlanner instance
+        orchestrator: Orchestrator instance
+    
+    Returns:
+        PlanningService instance
+    """
+    return PlanningService(planner, orchestrator)
 

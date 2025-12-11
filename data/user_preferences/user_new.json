@@ -1,0 +1,22 @@
+{
+  "traveler_id": "user_new",
+  "flight_preferences": {
+    "seat_type": "window",
+    "cabin_class": null,
+    "preferred_airlines": null
+  },
+  "hotel_preferences": {
+    "min_rating": 3.0,
+    "room_type": null,
+    "amenities": null,
+    "preferred_chains": null
+  },
+  "car_preferences": null,
+  "budget_range": null,
+  "dietary_restrictions": null,
+  "accessibility_needs": null,
+  "loyalty_programs": null,
+  "past_bookings_summary": null,
+  "summary": "Prefers: flights: window seat; hotels: 3.0+ star",
+  "cached_at": "2025-12-11T07:54:48.408669+00:00"
+}
