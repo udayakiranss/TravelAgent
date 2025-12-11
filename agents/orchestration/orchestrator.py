@@ -4,16 +4,16 @@ from typing import Dict, Any, Optional, List, TYPE_CHECKING
 import json
 import time
 
-from agents.planner import TravelPlanner, plan_trip
-from agents.llm_provider import LLMProvider, create_llm_provider, extract_token_usage
-from agents.flight_booking_agent import FlightBookingAgent
-from agents.hotel_booking_agent import HotelBookingAgent
-from agents.car_rental_agent import CarRentalAgent
-from agents.itinerary_agent import ItineraryAgent
-from agents.payment_agent import PaymentAgent
-from agents.response_formatter import ResponseFormatter
+from agents.planning.planner import TravelPlanner
+from agents.core.llm_provider import LLMProvider, create_llm_provider, extract_token_usage
+from agents.domain.flight_booking_agent import FlightBookingAgent
+from agents.domain.hotel_booking_agent import HotelBookingAgent
+from agents.domain.car_rental_agent import CarRentalAgent
+from agents.domain.itinerary_agent import ItineraryAgent
+from agents.domain.payment_agent import PaymentAgent
+from agents.orchestration.response_formatter import ResponseFormatter
 from api.config import SelectionCriteria, PreferenceLoadingMode, PREFERENCE_LOADING_MODE
-from database.repository import LLMUnavailableError, UserPreferencesRepository
+from database.repository import LLMUnavailableError
 from tools.preference_tools import load_full_preferences
 from utils.logger import get_logger, log_critical_entry_exit, log_method_entry_exit, _format_duration
 
@@ -70,31 +70,6 @@ class Orchestrator:
     # User Preferences Support
     # =========================================================================
     
-    def _get_preference_summary(self, ctx: "TravelContext") -> str:
-        """
-        Get user preference summary for prompt inclusion (~50 tokens).
-        
-        Uses filesystem cache for fast reads. Returns default message if
-        no preferences are set for the traveler.
-        
-        Args:
-            ctx: TravelContext with session and traveler_id
-        
-        Returns:
-            Compact preference summary string
-        """
-        if not ctx.traveler_id:
-            return "No traveler ID provided"
-        
-        try:
-            repo = UserPreferencesRepository(ctx.session)
-            summary = repo.get_summary(ctx.traveler_id)
-            logger.debug(f"Preference summary for {ctx.traveler_id}: {summary}")
-            return summary
-        except Exception as e:
-            logger.warning(f"Failed to get preference summary for {ctx.traveler_id}: {e}")
-            return "Unable to load preferences"
-    
     def _execute_preference_tool_call(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute the load_full_preferences tool call.
@@ -135,7 +110,7 @@ class Orchestrator:
         Returns:
             Dict with itinerary_id, options, reservations, and summary
         """
-        from agents.planner_schemas import ExecutionPlan
+        from agents.planning.schemas import ExecutionPlan
         
         logger.info(
             f"Orchestrator: Executing plan",
@@ -265,7 +240,7 @@ class Orchestrator:
         if not itinerary:
              logger.warning("Plan execution finished without building itinerary")
              # Return partial results with all expected keys (None for missing values)
-             preference_summary = getattr(ctx, 'preference_summary', None) or ""
+             preference_summary = ctx.preference_summary or ""
              return {
                 "itinerary_id": None,
                 "flight_options": flight_options,
@@ -293,7 +268,7 @@ class Orchestrator:
         
         # Generate summary
         summary = f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars"
-        preference_summary = getattr(ctx, 'preference_summary', None) or ""
+        preference_summary = ctx.preference_summary or ""
         
         llm = ctx.llm or self.llm
         if include_summary and llm:
@@ -335,41 +310,6 @@ class Orchestrator:
             "summary": summary,
             "query": ctx.original_query or "",
         }
-    
-    def plan_trip(self, query: str, ctx: "TravelContext", include_summary: bool = True) -> Dict[str, Any]:
-        """
-        Plan a trip from natural language query.
-        
-        .. deprecated::
-            Use TravelPlanner.create_plan_from_query() + Orchestrator.execute_plan() instead.
-            This method will be removed in a future version.
-        
-        Delegates to new Planner flow.
-        """
-        logger.warning("Calling deprecated method Orchestrator.plan_trip")
-        
-        # 1. Create plan using Planner (which now handles NL parsing)
-        plan = self.planner.create_plan_from_query(query, ctx)
-        
-        # 2. Handle clarification
-        if plan.status == "needs_clarification":
-            logger.info(
-                "Planner requires clarification",
-                extra={
-                    "plan_id": plan.plan_metadata.plan_id,
-                    "missing_fields": [mi.field for mi in plan.missing_info],
-                },
-            )
-            return {
-                "status": "needs_clarification",
-                "missing_info": [mi.model_dump() for mi in plan.missing_info],
-                "plan_id": plan.plan_metadata.plan_id,
-                "query": query,
-            }
-            
-        # 3. Execute plan
-        return self.execute_plan(plan, ctx, include_summary=include_summary)
-    
     def modify_itinerary(self, instruction: str, ctx: "TravelContext") -> Dict[str, Any]:
         """
         Modify an existing itinerary via natural language instruction.
@@ -463,8 +403,11 @@ Respond with ONLY the JSON object."""
         """
         Execute user intent by planning and coordinating agents.
         
-        This is the legacy method for non-context-aware execution.
-        For new code, use plan_trip() with TravelContext.
+        .. deprecated::
+            This is a legacy method for non-context-aware execution.
+            Used primarily in tests. For production code, use:
+            - PlanningService.plan_trip() for NL queries
+            - Orchestrator.execute_plan() for executing ExecutionPlan objects
         """
         logger.info(f"Running intent: needs={intent.get('needs', [])}")
 

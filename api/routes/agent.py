@@ -19,8 +19,8 @@ from api.dependencies import (
 )
 from api.services.conversation_service import ConversationService
 from api.services.planning_service import PlanningService
-from agents.orchestrator import Orchestrator
-from agents.planner import TravelPlanner
+from agents.orchestration import Orchestrator
+from agents.planning import TravelPlanner
 from database.repository import (
     ItineraryNotFoundError,
     LLMUnavailableError,

@@ -22,7 +22,7 @@ from database.repository import (
     VersionConflictError,
     InvalidStatusTransitionError,
 )
-from agents.orchestrator import Orchestrator
+from agents.orchestration import Orchestrator
 from api.utils import handle_domain_exception, create_error_response
 from utils.logger import get_logger
 

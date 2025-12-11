@@ -2,7 +2,7 @@
 # Payment processing agent
 from typing import Dict, Any
 from langchain.tools import tool
-from agents.base_agent import BaseAgent
+from agents.core.base_agent import BaseAgent
 from utils.logger import get_logger, log_method_entry_exit
 
 logger = get_logger()

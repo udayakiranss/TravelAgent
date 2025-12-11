@@ -1,5 +1,5 @@
 import pytest
-from agents.car_rental_agent import CarRentalAgent, search_cars_tool, book_car_tool
+from agents.domain.car_rental_agent import CarRentalAgent, search_cars_tool, book_car_tool
 
 class TestCarRentalAgent:
     

@@ -5,7 +5,7 @@ from typing import Optional
 from sqlmodel import Session
 from sqlalchemy import text
 
-from agents.llm_provider import LLMProvider
+from agents.core import LLMProvider
 from api.schemas import HealthResponse
 from utils.logger import get_logger
 

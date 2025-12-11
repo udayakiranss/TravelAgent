@@ -8,9 +8,9 @@ from sqlmodel.pool import StaticPool
 from datetime import datetime
 
 from database.models import Itinerary, ChatHistory, UserPreferences
-from agents.orchestrator import Orchestrator
-from agents.planner import TravelPlanner
-from agents.llm_provider import LLMProvider
+from agents.orchestration import Orchestrator
+from agents.planning import TravelPlanner
+from agents.core import LLMProvider
 from api.context import TravelContext
 
 

@@ -43,6 +43,14 @@ FLIGHTS = [
     {"id": "F029", "from": "NYC", "to": "LON", "date": "2025-12-08", "price": 720, "airline": "Virgin Atlantic", "departure": "22:00", "arrival": "10:00", "duration": "7h"},
     {"id": "F030", "from": "NYC", "to": "LON", "date": "2025-12-08", "price": 850, "airline": "American Airlines", "departure": "18:00", "arrival": "06:00", "duration": "7h"},
     
+    # London (LHR) to New York (NYC) - December 25, 2025
+    {"id": "F031", "from": "LHR", "to": "NYC", "date": "2025-12-25", "price": 820, "airline": "British Airways", "departure": "10:00", "arrival": "13:00", "duration": "7h"},
+    {"id": "F032", "from": "LHR", "to": "NYC", "date": "2025-12-25", "price": 750, "airline": "Virgin Atlantic", "departure": "12:00", "arrival": "15:00", "duration": "7h"},
+    {"id": "F033", "from": "LHR", "to": "NYC", "date": "2025-12-25", "price": 890, "airline": "American Airlines", "departure": "14:00", "arrival": "17:00", "duration": "7h"},
+    {"id": "F034", "from": "LHR", "to": "NYC", "date": "2025-12-25", "price": 680, "airline": "Norwegian Air", "departure": "16:00", "arrival": "19:00", "duration": "7h"},
+    {"id": "F035", "from": "LHR", "to": "NYC", "date": "2025-12-25", "price": 950, "airline": "Delta", "departure": "18:00", "arrival": "21:00", "duration": "7h"},
+    {"id": "F036", "from": "LHR", "to": "NYC", "date": "2025-12-25", "price": 720, "airline": "United Airlines", "departure": "20:00", "arrival": "23:00", "duration": "7h"},
+    
     # Hyderabad (HYD) to Dubai (DXB)
     {"id": "F025", "from": "HYD", "to": "DXB", "date": "2026-04-01", "price": 310, "airline": "Emirates", "departure": "05:30", "arrival": "08:00", "duration": "4h"},
     {"id": "F026", "from": "HYD", "to": "DXB", "date": "2026-04-05", "price": 255, "airline": "IndiGo", "departure": "11:00", "arrival": "13:30", "duration": "4h"},

@@ -1,5 +1,5 @@
 import pytest
-from agents.itinerary_agent import ItineraryAgent, build_itinerary_tool, update_itinerary_tool, get_itinerary_tool, _ITINERARIES
+from agents.domain.itinerary_agent import ItineraryAgent, build_itinerary_tool, update_itinerary_tool, get_itinerary_tool, _ITINERARIES
 
 class TestItineraryAgent:
     

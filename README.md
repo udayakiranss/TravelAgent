@@ -14,8 +14,6 @@ This system demonstrates a multi-agent architecture for travel booking with:
 
 ## Quick Start
 
-### Option 1: Command Line Interface (CLI)
-
 ```bash
 # Setup
 python -m venv .venv
@@ -24,12 +22,9 @@ pip install -r requirements.txt
 
 # Set API key (optional, for LLM-based planning)
 export OPENAI_API_KEY="your-api-key-here"
-
-# Run CLI demo
-python main.py
 ```
 
-### Option 2: Web API
+### Option 1: Web API
 
 ```bash
 # Start the API server
@@ -40,7 +35,7 @@ python -m uvicorn main_web:app --reload --port 8000
 # ReDoc: http://localhost:8000/redoc
 ```
 
-### Option 3: MCP Server (for Claude Desktop / Cursor)
+### Option 2: MCP Server (for Claude Desktop / Cursor)
 
 The system includes a **Model Context Protocol (MCP)** server that allows LLMs (like Claude Desktop or Cursor Agent) to directly interact with your running API.
 
@@ -425,7 +420,6 @@ travel-agents/
 │   ├── test_agents/            # Agent tests
 │   ├── test_core/              # Core planner/orchestrator tests
 │   └── test_integration/       # Integration flows
-├── main.py                     # CLI demo runner
 ├── main_web.py                 # FastAPI entry point
 ├── mcp/
 │   ├── __init__.py

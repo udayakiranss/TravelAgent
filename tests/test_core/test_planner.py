@@ -1,9 +1,8 @@
 import json
 import pytest
 
-from agents.llm_provider import LLMProvider
-from agents.planner import TravelPlanner
-from agents.planner_schemas import ExecutionPlan
+from agents.core import LLMProvider
+from agents.planning import TravelPlanner, ExecutionPlan
 from api.context import TravelContext
 
 

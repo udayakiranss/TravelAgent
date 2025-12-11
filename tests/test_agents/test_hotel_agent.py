@@ -1,5 +1,5 @@
 import pytest
-from agents.hotel_booking_agent import HotelBookingAgent, search_hotels_tool, book_hotel_tool
+from agents.domain.hotel_booking_agent import HotelBookingAgent, search_hotels_tool, book_hotel_tool
 
 class TestHotelBookingAgent:
     

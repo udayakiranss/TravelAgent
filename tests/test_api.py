@@ -10,7 +10,7 @@ from sqlmodel.pool import StaticPool
 
 from main_web import app
 from api.dependencies import get_db, get_llm, get_orchestrator
-from agents.orchestrator import Orchestrator
+from agents.orchestration import Orchestrator
 from database.models import Itinerary, ChatHistory
 
 

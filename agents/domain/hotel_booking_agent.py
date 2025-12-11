@@ -2,7 +2,7 @@
 # Hotel booking agent with multiple tools
 from typing import Dict, Any, Optional, TYPE_CHECKING
 from langchain.tools import tool
-from agents.base_agent import BaseAgent
+from agents.core.base_agent import BaseAgent
 from data.hotels import HOTELS
 from utils.logger import get_logger
 

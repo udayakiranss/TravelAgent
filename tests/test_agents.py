@@ -6,13 +6,18 @@ This script allows you to test each agent independently to verify they work corr
 with the mock data before running the full orchestrator.
 
 Usage:
-    python test_agents.py                    # Run all tests
-    python test_agents.py --agent flight     # Test only flight agent
-    python test_agents.py --agent hotel      # Test only hotel agent
-    python test_agents.py --agent car        # Test only car agent
-    python test_agents.py --agent itinerary  # Test only itinerary agent
-    python test_agents.py --agent payment    # Test only payment agent
-    python test_agents.py --interactive      # Interactive mode
+    python tests/test_agents.py                    # Run all tests
+    python tests/test_agents.py --agent flight     # Test only flight agent
+    python tests/test_agents.py --agent hotel      # Test only hotel agent
+    python tests/test_agents.py --agent car        # Test only car agent
+    python tests/test_agents.py --agent itinerary  # Test only itinerary agent
+    python tests/test_agents.py --agent payment    # Test only payment agent
+    python tests/test_agents.py --interactive      # Interactive mode
+    
+    # Or using Python module syntax:
+    python -m tests.test_agents
+    python -m tests.test_agents --agent flight
+    python -m tests.test_agents --interactive
 """
 
 import argparse
@@ -25,12 +30,14 @@ import os
 load_dotenv()
 
 # Import agents
-from agents.flight_booking_agent import FlightBookingAgent
-from agents.hotel_booking_agent import HotelBookingAgent
-from agents.car_rental_agent import CarRentalAgent
-from agents.itinerary_agent import ItineraryAgent
-from agents.payment_agent import PaymentAgent
-from agents.llm_provider import create_llm_provider
+from agents.domain import (
+    FlightBookingAgent,
+    HotelBookingAgent,
+    CarRentalAgent,
+    ItineraryAgent,
+    PaymentAgent,
+)
+from agents.core import create_llm_provider
 
 
 def get_llm():

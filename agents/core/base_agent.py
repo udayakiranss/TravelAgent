@@ -2,7 +2,7 @@
 # Base class for all agents
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from abc import ABC, abstractmethod
-from agents.llm_provider import LLMProvider
+from agents.core.llm_provider import LLMProvider
 from api.config import SelectionCriteria
 from utils.logger import get_logger, log_method_entry_exit
 

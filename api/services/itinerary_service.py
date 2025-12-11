@@ -21,7 +21,7 @@ from api.schemas import (
     ItineraryUpdateRequest,
     ChatHistoryResponse,
 )
-from agents.orchestrator import Orchestrator
+from agents.orchestration import Orchestrator
 from utils.logger import get_logger
 from api.utils import itinerary_to_response
 

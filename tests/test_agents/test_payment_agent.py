@@ -1,5 +1,5 @@
 import pytest
-from agents.payment_agent import PaymentAgent, process_payment_tool
+from agents.domain.payment_agent import PaymentAgent, process_payment_tool
 
 class TestPaymentAgent:
     

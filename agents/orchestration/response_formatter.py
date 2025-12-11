@@ -2,7 +2,7 @@
 # LLM-powered formatter that converts JSON agent results to natural language
 from typing import Dict, Any, Optional, Literal
 import json
-from agents.llm_provider import LLMProvider
+from agents.core.llm_provider import LLMProvider
 from utils.logger import get_logger, log_method_entry_exit
 
 logger = get_logger()

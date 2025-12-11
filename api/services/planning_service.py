@@ -8,9 +8,9 @@ from fastapi import status
 
 from api.schemas import PlanResponse, NaturalLanguageQueryRequest
 from api.config import DEFAULT_SELECTION_CRITERIA
-from agents.planner import TravelPlanner
-from agents.orchestrator import Orchestrator
-from database.repository import LLMUnavailableError
+from agents.planning import TravelPlanner
+from agents.orchestration import Orchestrator
+from database.repository import LLMUnavailableError, UserPreferencesRepository
 from api.utils import create_error_response
 from utils.logger import get_logger
 
@@ -70,6 +70,15 @@ class PlanningService:
         ctx.traveler_id = request.traveler_id
         ctx.criteria = request.selection_criteria or DEFAULT_SELECTION_CRITERIA
         ctx.original_query = request.query
+        
+        # Load user preferences summary for personalization
+        try:
+            pref_repo = UserPreferencesRepository(ctx.session)
+            ctx.preference_summary = pref_repo.get_summary(ctx.traveler_id)
+            logger.debug(f"Loaded preference summary for {ctx.traveler_id}: {ctx.preference_summary[:50]}..." if ctx.preference_summary else "No preferences found")
+        except Exception as e:
+            logger.warning(f"Failed to load preferences for {ctx.traveler_id}: {e}")
+            ctx.preference_summary = "No preferences set for this traveler"
         
         logger.info(f"Planning service: traveler={ctx.traveler_id}, criteria={ctx.criteria.value}")
         

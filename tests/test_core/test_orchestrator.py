@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from agents.orchestrator import Orchestrator
+from agents.orchestration import Orchestrator
 
 class TestOrchestrator:
     

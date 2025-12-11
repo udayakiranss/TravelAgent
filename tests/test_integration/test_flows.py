@@ -1,6 +1,6 @@
 import pytest
-from agents.orchestrator import Orchestrator
-from agents.itinerary_agent import _ITINERARIES
+from agents.orchestration import Orchestrator
+from agents.domain.itinerary_agent import _ITINERARIES
 
 class TestIntegrationFlows:
     

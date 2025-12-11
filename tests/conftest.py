@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from agents.llm_provider import LLMProvider
+from agents.core import LLMProvider
 
 @pytest.fixture
 def mock_llm():

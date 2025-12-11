@@ -348,7 +348,7 @@ All core features have been verified and are functioning correctly. The system i
 
 ## Test Execution Log
 
-**Command:** `python3 main.py`  
+**Command:** `python -m uvicorn main_web:app --reload --port 8000` (Web API)  
 **Date:** November 30, 2025  
 **Session ID:** 86d68578-...  
 **Status:** ✅ Success

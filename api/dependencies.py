@@ -11,9 +11,9 @@ from fastapi import Request, Depends
 from sqlmodel import Session
 
 from database.connection import engine, create_db_and_tables
-from agents.orchestrator import Orchestrator
-from agents.planner import TravelPlanner
-from agents.llm_provider import create_llm_provider, LLMProvider
+from agents.orchestration import Orchestrator
+from agents.planning import TravelPlanner
+from agents.core import create_llm_provider, LLMProvider
 from api.context import TravelContext
 from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
 from api.services import (
