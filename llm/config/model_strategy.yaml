@@ -1,0 +1,154 @@
+use_cases:
+  planner:
+    provider: openai
+    model: gpt-4o
+    prompt: planner_base
+    overrides:
+      temperature: 0
+      enable_json_mode: true
+      max_tokens: 4000
+      enable_prompt_caching: true
+      timeout: 30
+      max_retries: 3
+    fallback:
+      provider: anthropic
+      model: claude-3-5-sonnet-latest
+      overrides:
+        temperature: 0
+        enable_json_mode: true
+
+  intent_parsing:
+    provider: openai
+    model: gpt-4o-mini
+    prompt: intent_parsing_base
+    overrides:
+      temperature: 0
+      enable_json_mode: true
+      max_tokens: 2000
+      enable_tool_binding: true
+
+  summary_generation:
+    provider: openai
+    model: gpt-4.1-mini
+    prompt: summary_generation_base
+    overrides:
+      temperature: 0.3
+      enable_json_mode: false
+      max_tokens: 500
+      enable_prompt_caching: false
+
+  task_routing:
+    provider: openai
+    model: gpt-3.5-turbo
+    prompt: task_routing_base
+    overrides:
+      temperature: 0
+      enable_json_mode: false
+      max_tokens: 50
+      timeout: 5
+      max_retries: 1
+
+  modification:
+    provider: openai
+    model: gpt-4o
+    prompt: modification_base
+    overrides:
+      temperature: 0
+      enable_json_mode: false
+      max_tokens: 2000
+      timeout: 20
+
+providers:
+  openai:
+    default_model: gpt-4o
+    capabilities:
+      json_mode: true
+      tool_binding: true
+      prompt_caching: true
+    models:
+      gpt-4o:
+        supports_json_mode: true
+        supports_tool_binding: true
+        max_tokens_limit: 16384
+        default_temperature: 0
+      gpt-4-turbo:
+        supports_json_mode: true
+        supports_tool_binding: true
+        max_tokens_limit: 128000
+        default_temperature: 0
+      gpt-4o-mini:
+        supports_json_mode: true
+        supports_tool_binding: true
+        max_tokens_limit: 16384
+        default_temperature: 0
+      gpt-4.1-mini:
+        supports_json_mode: true
+        supports_tool_binding: true
+        max_tokens_limit: 16384
+        default_temperature: 0
+      gpt-3.5-turbo:
+        supports_json_mode: true
+        supports_tool_binding: true
+        max_tokens_limit: 16384
+        default_temperature: 0
+    provider_specific_settings:
+      json_mode_param: response_format
+      json_mode_value:
+        type: json_object
+      api_key_env: OPENAI_API_KEY
+
+  anthropic:
+    default_model: claude-3-5-sonnet-latest
+    capabilities:
+      json_mode: true
+      tool_binding: true
+      prompt_caching: false
+    models:
+      claude-3-5-sonnet-latest:
+        supports_json_mode: true
+        supports_tool_binding: true
+        max_tokens_limit: 8192
+        default_temperature: 0
+    provider_specific_settings:
+      json_mode_param: response_format
+      json_mode_value:
+        type: json_schema
+      api_key_env: ANTHROPIC_API_KEY
+
+  google_genai:
+    default_model: gemini-2.0-flash
+    capabilities:
+      json_mode: true
+      tool_binding: true
+      prompt_caching: false
+    models:
+      gemini-2.0-flash:
+        supports_json_mode: true
+        supports_tool_binding: true
+        max_tokens_limit: 8192
+        default_temperature: 0
+    provider_specific_settings:
+      json_mode_param: response_mime_type
+      json_mode_value: application/json
+      api_key_env: GOOGLE_API_KEY
+
+  groq:
+    default_model: llama-3.1-70b-versatile
+    capabilities:
+      json_mode: false
+      tool_binding: false
+      prompt_caching: false
+    models:
+      llama-3.1-70b-versatile:
+        supports_json_mode: false
+        supports_tool_binding: false
+        max_tokens_limit: 8192
+        default_temperature: 0
+    provider_specific_settings:
+      api_key_env: GROQ_API_KEY
+
+defaults:
+  temperature: 0
+  max_tokens: 2000
+  timeout: 30
+  max_retries: 2

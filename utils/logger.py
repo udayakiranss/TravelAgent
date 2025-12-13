@@ -477,8 +477,50 @@ class Timer:
         self.start_time: float = 0
         self.end_time: float = 0
         self.duration_ms: float = 0
+        # Will be set in __enter__ to capture the actual caller location
+        self.caller_file = None
+        self.caller_line = 0
+        self.caller_func = "unknown"
     
     def __enter__(self) -> "Timer":
+        # Capture caller's file location for accurate logging
+        # This captures the frame where 'with Timer(...)' is used
+        # We walk up the frame stack to find the first frame that's not in logger.py
+        frame = inspect.currentframe()
+        caller_frame = None
+        
+        if frame:
+            # Start from the frame that called __enter__ (f_back)
+            current = frame.f_back
+            logger_file = os.path.abspath(__file__)
+            
+            # Walk up the stack until we find a frame outside logger.py
+            while current:
+                try:
+                    frame_file = os.path.abspath(inspect.getfile(current))
+                    if frame_file != logger_file:
+                        caller_frame = current
+                        break
+                except (OSError, TypeError):
+                    pass
+                current = current.f_back
+        
+        if caller_frame:
+            try:
+                self.caller_file = inspect.getfile(caller_frame)
+                self.caller_line = caller_frame.f_lineno
+                self.caller_func = caller_frame.f_code.co_name
+            except (OSError, TypeError):
+                # Fallback if we can't get caller info
+                self.caller_file = __file__
+                self.caller_line = 0
+                self.caller_func = "unknown"
+        else:
+            # Fallback if we can't get caller info
+            self.caller_file = __file__
+            self.caller_line = 0
+            self.caller_func = "unknown"
+        
         self.start_time = time.perf_counter()
         return self
     
@@ -488,11 +530,23 @@ class Timer:
         
         if self.log:
             duration_str = _format_duration(self.duration_ms)
+            log_level = getattr(logging, self.level.upper(), logging.DEBUG)
+            
             if exc_type is None:
-                log_func = getattr(self.logger, self.level.lower())
-                log_func(f"⏱ {self.operation} completed in {duration_str}")
+                message = f"⏱ {self.operation} completed in {duration_str}"
             else:
-                self.logger.error(f"⏱ {self.operation} failed after {duration_str}: {exc_type.__name__}")
+                message = f"⏱ {self.operation} failed after {duration_str}: {exc_type.__name__}"
+                log_level = logging.ERROR
+            
+            # Use _log_with_location to show the actual caller's file, not logger.py
+            _log_with_location(
+                self.logger,
+                log_level,
+                message,
+                self.caller_file,
+                self.caller_line,
+                self.caller_func
+            )
         
         return False
     

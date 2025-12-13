@@ -14,6 +14,8 @@ from agents.planning.schemas import ExecutionPlan, MissingInfo, PlanMetadata, Pl
 from agents.planning.alias_resolver import AliasResolver
 from api.config import PreferenceLoadingMode, PREFERENCE_LOADING_MODE
 from utils.logger import get_logger, _format_duration
+from llm.strategy.use_cases import UseCase
+from llm.prompts.repository import PromptRepository
 
 if TYPE_CHECKING:
     from api.context import TravelContext
@@ -95,7 +97,7 @@ class DeterministicPlanner:
                 if PREFERENCE_LOADING_MODE == PreferenceLoadingMode.TOOL_BINDING:
                     intent = self._parse_query_with_tool_binding(query, llm, preference_summary, ctx)
                 else:
-                    intent = self._parse_query_with_preferences(query, llm, preference_summary)
+                    intent = self._parse_query_with_preferences(query, llm, preference_summary, ctx)
             else:
                 intent = self._parse_rule_based(query)
         except Exception as e:
@@ -186,7 +188,7 @@ class DeterministicPlanner:
     # Intent Parsing
     # ------------------------------------------------------------------ #
     
-    def _parse_query_with_preferences(self, text: str, llm: LLMProvider, preference_summary: str) -> dict:
+    def _parse_query_with_preferences(self, text: str, llm: LLMProvider, preference_summary: str, ctx: Optional["TravelContext"] = None) -> dict:
         """
         Use LLM to parse natural language into structured intent, with preference context.
         
@@ -194,30 +196,31 @@ class DeterministicPlanner:
             text: User's natural language query
             llm: LLM provider
             preference_summary: Compact preference summary (~50 tokens)
+            ctx: Optional TravelContext for accessing model_strategy
         
         Returns:
             Structured intent dict
         """
         logger.debug(f"DeterministicPlanner: Parsing query with LLM (summary mode)")
         
-        prompt = (
-            "Parse the following user query about travel booking into a structured intent format.\n\n"
-            f'User Query: "{text}"\n\n'
-            f"Traveler Preferences: {preference_summary}\n\n"
-            "Extract the following information:\n"
-            "- needs: List of services needed (flight, hotel, car, itinerary)\n"
-            "- from: Origin airport code (3 letters, uppercase)\n"
-            "- to: Destination airport code (3 letters, uppercase)\n"
-            "- date: Travel date in YYYY-MM-DD format\n\n"
-            "Note: Consider the traveler's preferences when interpreting ambiguous requests.\n"
-            "Return ONLY a valid JSON object with these fields. Example:\n"
-            '{\n'
-            '  "needs": ["flight", "hotel", "car", "itinerary"],\n'
-            '  "from": "NYC",\n'
-            '  "to": "LON",\n'
-            '  "date": "2025-08-12"\n'
-            '}'
-        )
+        # Get prompt from prompts.yaml via model_strategy
+        prompt = None
+        if ctx and ctx.model_strategy:
+            try:
+                prompt = ctx.model_strategy.get_prompt_for_use_case(
+                    UseCase.INTENT_PARSING,
+                    text=text,
+                    preference_summary=preference_summary
+                )
+                logger.debug("Retrieved intent parsing prompt from prompts.yaml")
+            except Exception as e:
+                logger.error(f"Failed to get prompt from prompts.yaml: {e}")
+                raise ValueError(f"Cannot proceed without prompt from prompts.yaml: {e}") from e
+        else:
+            raise ValueError(
+                "TravelContext with model_strategy is required. "
+                "Prompt must come from prompts.yaml."
+            )
         
         try:
             start_time = time.perf_counter()
@@ -289,24 +292,28 @@ class DeterministicPlanner:
             llm_with_tools = llm.llm.bind_tools([load_full_preferences])
         except Exception as e:
             logger.warning(f"DeterministicPlanner: Failed to bind tools: {e}, using summary-only mode")
-            return self._parse_query_with_preferences(text, llm, preference_summary)
+            return self._parse_query_with_preferences(text, llm, preference_summary, ctx)
+        
+        # Get prompt from prompts.yaml - use intent_parsing_tool_binding prompt
+        if not ctx.model_strategy:
+            logger.warning("No model_strategy in context. Falling back to summary-only mode.")
+            return self._parse_query_with_preferences(text, llm, preference_summary, ctx)
+        
+        try:
+            # Use PromptRepository directly to get the tool_binding variant
+            prompt = PromptRepository.get_prompt(
+                "intent_parsing_tool_binding",
+                text=text,
+                traveler_id=ctx.traveler_id,
+                preference_summary=preference_summary
+            )
+            logger.debug("Retrieved intent parsing (tool-binding) prompt from prompts.yaml")
+        except Exception as e:
+            logger.warning(f"Failed to get tool-binding prompt from prompts.yaml: {e}. Using summary-only mode.")
+            return self._parse_query_with_preferences(text, llm, preference_summary, ctx)
         
         # Track LLM call timing
         start_time = time.perf_counter()
-        prompt = (
-            "Parse the following user query about travel booking into a structured intent format.\n\n"
-            f'User Query: "{text}"\n\n'
-            f"Traveler ID: {ctx.traveler_id}\n"
-            f"Traveler Preferences Summary: {preference_summary}\n\n"
-            "If you need detailed preferences (loyalty program numbers, dietary restrictions, "
-            "accessibility needs, or past booking patterns), use the load_full_preferences tool.\n\n"
-            "Extract the following information:\n"
-            "- needs: List of services needed (flight, hotel, car, itinerary)\n"
-            "- from: Origin airport code (3 letters, uppercase)\n"
-            "- to: Destination airport code (3 letters, uppercase)\n"
-            "- date: Travel date in YYYY-MM-DD format\n\n"
-            "Return ONLY a valid JSON object with these fields."
-        )
         
         try:
             # First LLM call with tools
@@ -378,7 +385,7 @@ class DeterministicPlanner:
             return self._parse_rule_based(text)
         except Exception as e:
             logger.warning(f"DeterministicPlanner: Tool binding mode failed: {e}, using summary-only mode")
-            return self._parse_query_with_preferences(text, llm, preference_summary)
+            return self._parse_query_with_preferences(text, llm, preference_summary, ctx)
     
     def _parse_rule_based(self, text: str) -> dict:
         """Simple rule-based NL parser (fallback when LLM unavailable)."""

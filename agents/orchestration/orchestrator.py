@@ -12,6 +12,7 @@ from agents.domain.car_rental_agent import CarRentalAgent
 from agents.domain.itinerary_agent import ItineraryAgent
 from agents.domain.payment_agent import PaymentAgent
 from agents.orchestration.response_formatter import ResponseFormatter
+from llm import ModelInvocationStrategy, UseCase
 from api.config import SelectionCriteria, PreferenceLoadingMode, PREFERENCE_LOADING_MODE
 from database.repository import LLMUnavailableError
 from tools.preference_tools import load_full_preferences
@@ -28,19 +29,25 @@ logger = get_logger()
 class Orchestrator:
     """Orchestrator that coordinates multiple agents to fulfill user intents"""
     
-    def __init__(self, llm: Optional[LLMProvider] = None, memory=None, 
+    def __init__(self, llm: Optional[LLMProvider] = None, 
+                 strategy: Optional[ModelInvocationStrategy] = None,
+                 memory=None, 
                  model_name: str = "gpt-4o", model_provider: str = "openai"):
         """
         Initialize orchestrator
         
         Args:
-            llm: Optional LLM provider (if None, will create one)
+            llm: Optional LLM provider (Legacy)
+            strategy: Model Strategy (Preferred)
             memory: Optional memory for conversation history
             model_name: Model name for LLM (if creating new provider)
             model_provider: Model provider (if creating new provider)
         """
-        # Initialize or use provided LLM
-        if llm is None:
+        self.strategy = strategy
+        self.llm = llm
+        
+        # Initialize legacy LLM if needed and no strategy
+        if self.llm is None and self.strategy is None:
             try:
                 self.llm = create_llm_provider(
                     model_name=model_name,
@@ -48,22 +55,30 @@ class Orchestrator:
                     temperature=0
                 )
             except Exception as e:
-                logger.warning(f"Could not initialize LLM: {e}. Continuing without LLM.")
+                logger.warning(f"Could not initialize LLM: {e}")
                 self.llm = None
-        else:
-            self.llm = llm
         
         self.memory = memory
         
+        # Determine agent LLM
+        # Use TASK_ROUTING (or similar) from strategy, or fallback to legacy LLM
+        agent_llm = self.llm
+        if self.strategy:
+             try:
+                 agent_llm = self.strategy.get_llm_for_use_case(UseCase.TASK_ROUTING)
+             except Exception:
+                 agent_llm = self.llm
+        
         # Initialize agents
         self.agents = {
-            'FlightBookingAgent': FlightBookingAgent(llm=self.llm),
-            'HotelBookingAgent': HotelBookingAgent(llm=self.llm),
-            'CarRentalAgent': CarRentalAgent(llm=self.llm),
-            'ItineraryAgent': ItineraryAgent(llm=self.llm),
-            'PaymentAgent': PaymentAgent(llm=self.llm),
+            'FlightBookingAgent': FlightBookingAgent(llm=agent_llm),
+            'HotelBookingAgent': HotelBookingAgent(llm=agent_llm),
+            'CarRentalAgent': CarRentalAgent(llm=agent_llm),
+            'ItineraryAgent': ItineraryAgent(llm=agent_llm),
+            'PaymentAgent': PaymentAgent(llm=agent_llm),
         }
-        self.planner = TravelPlanner(llm=self.llm)
+        # Planner handles its own LLM resolution now if passed strategy
+        self.planner = TravelPlanner(llm=self.llm, strategy=self.strategy)
         logger.info(f"Orchestrator initialized with {len(self.agents)} agents")
     
     # =========================================================================
@@ -270,8 +285,22 @@ class Orchestrator:
         summary = f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars"
         preference_summary = ctx.preference_summary or ""
         
-        llm = ctx.llm or self.llm
-        if include_summary and llm:
+        # Generate summary
+        summary = f"Found {len(flight_options)} flights, {len(hotel_options)} hotels, {len(car_options)} cars"
+        preference_summary = ctx.preference_summary or ""
+        
+        # Determine LLM for summary generation
+        summary_llm = None
+        if self.strategy:
+             try:
+                 summary_llm = self.strategy.get_llm_for_use_case(UseCase.SUMMARY_GENERATION)
+             except Exception as e:
+                 logger.debug(f"Strategy summary LLM lookup failed: {e}")
+                 
+        if not summary_llm:
+             summary_llm = ctx.llm or self.llm
+             
+        if include_summary and summary_llm:
             try:
                 results = {
                     "flight": flight_reservation,
@@ -281,7 +310,7 @@ class Orchestrator:
                     "traveler_preferences": preference_summary,
                 }
                 
-                formatter = ResponseFormatter(llm=llm)
+                formatter = ResponseFormatter(llm=summary_llm, model_strategy=self.strategy)
                 # We need intent for formatter. Plan doesn't strictly have 'intent' dict anymore.
                 # But we have original query.
                 # Or we can reconstruct intent from tasks?
@@ -327,36 +356,28 @@ class Orchestrator:
                 "partial": False,
             }
         
-        llm = ctx.llm or self.llm
+        # Get LLM and prompt from strategy (prompts.yaml) - required per design
+        if not self.strategy:
+            raise ValueError(
+                "model_strategy is required. Prompt must come from prompts.yaml. "
+                "Ensure Orchestrator is initialized with strategy."
+            )
+        
+        try:
+            llm = self.strategy.get_llm_for_use_case(UseCase.MODIFICATION)
+            modification_prompt = self.strategy.get_prompt_for_use_case(
+                UseCase.MODIFICATION, 
+                current_state=json.dumps(current_state, indent=2),
+                history_text=history_text,
+                instruction=instruction
+            )
+            logger.debug("Retrieved modification prompt from prompts.yaml")
+        except Exception as e:
+            logger.error(f"Failed to get modification prompt from prompts.yaml: {e}")
+            raise ValueError(f"Cannot proceed without prompt from prompts.yaml: {e}") from e
+        
         if llm is None:
             raise LLMUnavailableError("LLM is required for natural language modification")
-        
-        # Build modification prompt with context
-        current_state = {
-            "flight": ctx.itinerary.flight_reservation,
-            "hotel": ctx.itinerary.hotel_reservation,
-            "car": ctx.itinerary.car_reservation,
-            "total_cost": ctx.itinerary.total_cost,
-        }
-        
-        history_text = ctx.get_chat_history_text(limit=10)
-        
-        modification_prompt = f"""You are a travel agent assistant. Based on the current itinerary state and user instruction, determine what needs to be modified.
-
-Current Itinerary State:
-{json.dumps(current_state, indent=2)}
-
-Previous Conversation:
-{history_text}
-
-User Instruction: {instruction}
-
-Analyze the instruction and respond with a JSON object containing:
-- "component": which component to modify ("flight", "hotel", or "car")
-- "action": what action to take ("search_new", "remove", "update")
-- "parameters": any search parameters extracted from the instruction
-
-Respond with ONLY the JSON object."""
 
         # Get LLM response for modification analysis
         try:
@@ -422,6 +443,23 @@ Respond with ONLY the JSON object."""
                 "plan_id": plan.plan_metadata.plan_id,
             }
 
+        # Create minimal ctx for legacy compatibility (agents need ctx for prompts.yaml)
+        # Note: This is a workaround for deprecated method - production code should use execute_plan()
+        from api.context import TravelContext
+        from sqlmodel import Session, create_engine
+        from sqlmodel.pool import StaticPool
+        
+        # Create a minimal in-memory session for legacy compatibility
+        # This won't be used for DB operations in legacy path, but is required by TravelContext
+        engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
+        minimal_session = Session(engine)
+        minimal_ctx = TravelContext(
+            session=minimal_session,
+            llm=self.llm,
+            model_strategy=self.strategy,  # Pass strategy so agents can get prompts from prompts.yaml
+            traveler_id=intent.get("traveler_id", ""),
+        )
+
         # Execute tasks respecting dependencies (simple topo by readiness)
         results: Dict[str, Any] = {}
         context: Dict[str, Any] = {}
@@ -444,7 +482,7 @@ Respond with ONLY the JSON object."""
                 if agent_name in self.agents:
                     agent = self.agents[agent_name]
                     try:
-                        result = agent.execute(task_name, params)
+                        result = agent.execute(task_name, params, minimal_ctx)
                         logger.debug(f"Task {agent_name}.{task_name} completed")
                         results[f"{agent_name}.{task_name}"] = result
                         context[agent_name] = result

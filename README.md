@@ -1,9 +1,11 @@
 # Agentic Travel Booking System with LLM Integration
 
 This system demonstrates a multi-agent architecture for travel booking with:
+- **Model Invocation Strategy** - Centralized LLM configuration with use-case-specific provider/model selection
 - **LLM-based intelligent planning** - Uses foundation models to select appropriate agents
 - **Specialized agents** - Each agent handles a specific domain with multiple tools
 - **Flexible LLM integration** - Supports any foundation model (OpenAI, Anthropic, Google, etc.)
+- **Prompt Repository** - Centralized prompt management with template support
 - **Agent orchestration** - Coordinates multiple agents to fulfill complex user intents
 - **Service layer** - Encapsulates business logic behind the API routes
 - **User Preferences** - Personalized recommendations via tiered preference loading
@@ -107,6 +109,12 @@ graph TB
         SERVICES[Services<br/>Business Logic]
     end
     
+    subgraph "LLM Layer"
+        LLM_STRAT[Model Invocation Strategy<br/>llm/strategy/]
+        LLM_PROV[LLM Providers<br/>llm/providers/]
+        PROMPTS[Prompt Repository<br/>llm/prompts/]
+    end
+    
     subgraph "Agent Layer"
         ORCH[Orchestrator<br/>Agent Coordination]
         PLAN[Planner<br/>LLM-based Planning]
@@ -127,6 +135,11 @@ graph TB
     SERVICES --> PLAN
     ORCH --> AGENTS
     PLAN --> ORCH
+    PLAN --> LLM_STRAT
+    ORCH --> LLM_STRAT
+    AGENTS --> LLM_STRAT
+    LLM_STRAT --> LLM_PROV
+    LLM_STRAT --> PROMPTS
     AGENTS --> DB
     AGENTS --> CACHE
     AGENTS --> TOOLS
@@ -134,10 +147,19 @@ graph TB
 
 ### Core Components
 
-1. **LLM Provider** (`agents/core/llm_provider.py`)
+1. **Model Invocation Strategy** (`llm/`)
+   - **Centralized LLM configuration** - YAML-based configuration for provider/model selection per use case
+   - **Use case management** - Different providers/models/settings for planner, intent parsing, summaries, etc.
+   - **Prompt repository** - Centralized prompt storage with template substitution
+   - **Provider factory** - Creates provider instances based on configuration
+   - **Fail-fast validation** - Configuration errors detected at startup
+   - See `docs/MODEL_INVOCATION_STRATEGY_DESIGN.md` for detailed design
+
+2. **LLM Provider** (`agents/core/llm_provider.py`, `llm/providers/`)
    - Flexible abstraction supporting multiple foundation models
    - Supports OpenAI, Anthropic, Google, and other providers via LangChain
    - Handles structured output generation
+   - Uses Model Invocation Strategy internally for configuration
 
 2. **Planner** (`agents/planning/planner.py`)
    - **LLM-based planning**: Uses foundation models to intelligently select agents and tasks
@@ -254,6 +276,12 @@ sequenceDiagram
 
 ```mermaid
 graph LR
+    subgraph "LLM Module"
+        STRAT[ModelInvocationStrategy<br/>llm/strategy/]
+        PROV[Providers<br/>llm/providers/]
+        PROMPT[PromptRepository<br/>llm/prompts/]
+    end
+    
     subgraph "Core Agents"
         BASE[BaseAgent<br/>agents/core/base_agent.py]
         LLM[LLMProvider<br/>agents/core/llm_provider.py]
@@ -284,6 +312,9 @@ graph LR
     BASE --> CAR
     BASE --> ITIN
     BASE --> PAY
+    LLM --> STRAT
+    STRAT --> PROV
+    STRAT --> PROMPT
     LLM --> ORCH
     LLM --> PLAN
     ORCH --> FLIGHT
@@ -293,6 +324,62 @@ graph LR
     PLAN --> DET
     PLAN --> ALIAS
 ```
+
+### Model Invocation Strategy
+
+The system uses a centralized **Model Invocation Strategy** to manage LLM provider and model selection across different use cases. This provides:
+
+- **Use-case-specific configuration** - Different providers/models for planning, intent parsing, summaries, etc.
+- **Provider isolation** - Provider-specific settings (capabilities, API keys, JSON mode) are isolated from use cases
+- **Explicit overrides** - Same provider/model can have different settings per use case (temperature, max_tokens, timeout)
+- **Fallback support** - Automatic fallback to alternative providers if primary fails
+- **Prompt repository** - Centralized prompt storage with template substitution
+- **Fail-fast validation** - Configuration errors detected at application startup
+
+#### Configuration Files
+
+- **`llm/config/model_strategy.yaml`** - Defines use cases, providers, models, and settings
+- **`llm/config/prompts.yaml`** - Stores all prompts with template variables
+
+#### Use Cases
+
+The system defines five LLM use cases:
+
+1. **`planner`** - Main planning LLM for generating execution plans from natural language queries
+2. **`intent_parsing`** - Parsing user queries into structured intent formats
+3. **`summary_generation`** - Converting structured booking results into natural language summaries
+4. **`task_routing`** - Routing ambiguous tasks to appropriate agent tools
+5. **`modification`** - Modifying existing itineraries via natural language instructions
+
+Each use case can specify:
+- Provider (openai, anthropic, google_genai, groq, etc.)
+- Model name (gpt-4o, claude-3-5-sonnet-latest, etc.)
+- Prompt reference (links to prompts.yaml)
+- Overrides (temperature, max_tokens, timeout, retries, enable_json_mode, etc.)
+- Fallback configuration (alternative provider/model if primary fails)
+
+#### Example: Different Settings for Same Provider/Model
+
+```yaml
+use_cases:
+  planner:
+    provider: openai
+    model: gpt-4o
+    overrides:
+      temperature: 0
+      enable_json_mode: true
+      max_tokens: 4000
+      
+  summary_generation:
+    provider: openai
+    model: gpt-4o  # Same provider/model
+    overrides:     # But different settings
+      temperature: 0.3
+      enable_json_mode: false
+      max_tokens: 500
+```
+
+See `docs/MODEL_INVOCATION_STRATEGY_DESIGN.md` for complete design documentation.
 
 ### Specialized Agents
 
@@ -524,12 +611,34 @@ The API uses SQLite with three main tables:
 
 ```
 travel-agents/
+├── llm/                            # Model Invocation Strategy
+│   ├── __init__.py                 # Public API
+│   ├── strategy/                   # Strategy implementation
+│   │   ├── __init__.py
+│   │   ├── model_strategy.py      # Main orchestrator
+│   │   ├── use_cases.py           # UseCase enum
+│   │   ├── config_loader.py       # YAML config loading
+│   │   └── resolver.py            # Config resolution
+│   ├── providers/                  # Provider implementations
+│   │   ├── __init__.py
+│   │   ├── base.py                # Abstract base class
+│   │   ├── factory.py             # Provider factory
+│   │   ├── openai.py              # OpenAI provider
+│   │   ├── anthropic.py           # Anthropic provider
+│   │   └── capabilities.py       # Capability detection
+│   ├── prompts/                   # Prompt management
+│   │   ├── __init__.py
+│   │   ├── repository.py          # Prompt loading & caching
+│   │   └── template.py            # Template substitution
+│   └── config/                     # Configuration files
+│       ├── model_strategy.yaml     # Use case & provider config
+│       └── prompts.yaml           # Prompt repository
 ├── agents/
 │   ├── __init__.py
 │   ├── core/                      # Core agent infrastructure
 │   │   ├── __init__.py
 │   │   ├── base_agent.py          # Base class for all agents
-│   │   ├── llm_provider.py        # LLM integration abstraction
+│   │   ├── llm_provider.py        # Legacy bridge (uses llm/ module)
 │   │   ├── memory.py              # Memory/conversation management
 │   │   └── router.py              # Legacy router
 │   ├── domain/                    # Domain-specific agents
@@ -597,6 +706,7 @@ travel-agents/
 │   ├── LOGGING.md
 │   ├── PLAN_TRIP_API_FLOW.md
 │   ├── PLANNER_DAG_DESIGN.md
+│   ├── MODEL_INVOCATION_STRATEGY_DESIGN.md  # Model Invocation Strategy design
 │   ├── PLANNER_FALLBACK_ANALYSIS.md
 │   ├── PLANNER_REFACTOR.md
 │   ├── REUSING_PROJECT_STRUCTURE.md
@@ -639,13 +749,65 @@ travel-agents/
 
 ## Configuration
 
+### Model Invocation Strategy
+
+The system uses a centralized Model Invocation Strategy for LLM configuration. Configuration is defined in YAML files:
+
+- **`llm/config/model_strategy.yaml`** - Use case configurations, provider settings, and defaults
+- **`llm/config/prompts.yaml`** - Centralized prompt repository with templates
+
+#### Use Cases
+
+The system supports the following LLM use cases, each with its own provider/model configuration:
+
+| Use Case | Description | Default Provider/Model |
+|----------|-------------|----------------------|
+| `planner` | Main planning LLM for generating execution plans | OpenAI `gpt-4o` |
+| `intent_parsing` | Parsing user queries into structured intents | OpenAI `gpt-4o-mini` |
+| `summary_generation` | Generating natural language summaries | OpenAI `gpt-4o` |
+| `task_routing` | Routing ambiguous tasks to appropriate tools | OpenAI `gpt-3.5-turbo` |
+| `modification` | Modifying itineraries via natural language | OpenAI `gpt-4o` |
+
+Each use case can have:
+- **Provider and model selection** - Different providers/models per use case
+- **Explicit overrides** - Temperature, max_tokens, timeout, retries, etc.
+- **Fallback configuration** - Automatic fallback if primary provider fails
+- **Prompt reference** - Links to prompts in the prompt repository
+
+#### Example Configuration
+
+```yaml
+use_cases:
+  planner:
+    provider: openai
+    model: gpt-4o
+    prompt: planner_base
+    overrides:
+      temperature: 0
+      enable_json_mode: true
+      max_tokens: 4000
+      timeout: 30
+    fallback:
+      provider: anthropic
+      model: claude-3-5-sonnet-latest
+      overrides:
+        temperature: 0
+        enable_json_mode: true
+```
+
+> **Security Note**: API keys are never stored in YAML files. The configuration references environment variable names (e.g., `OPENAI_API_KEY`), and values are loaded from the environment at runtime.
+
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | - | OpenAI API key (required for LLM features) |
-| `LLM_MODEL` | `gpt-4o` | Model name |
-| `LLM_PROVIDER` | `openai` | Model provider |
+| `OPENAI_API_KEY` | - | OpenAI API key (required for OpenAI use cases) |
+| `ANTHROPIC_API_KEY` | - | Anthropic API key (required for Anthropic use cases) |
+| `GOOGLE_API_KEY` | - | Google API key (required for Google use cases) |
+| `GROQ_API_KEY` | - | Groq API key (required for Groq use cases) |
+| `LLM_MODEL` | - | **⚠️ Deprecated** - Use `llm/config/model_strategy.yaml` instead. This bypasses centralized configuration. |
+| `LLM_PROVIDER` | - | **⚠️ Deprecated** - Use `llm/config/model_strategy.yaml` instead. This bypasses centralized configuration. |
+| `LLM_TEMPERATURE` | - | **⚠️ Deprecated** - Use `llm/config/model_strategy.yaml` instead. Temperature is configured per use case. |
 | `LLM_TIMEOUT` | `60` | Timeout for LLM operations (seconds) |
 | `PORT` | `8000` | API server port |
 | `HOST` | `0.0.0.0` | API server host |
@@ -657,10 +819,35 @@ travel-agents/
 ### Example `.env` file
 
 ```env
+# API Keys (required based on providers in model_strategy.yaml)
 OPENAI_API_KEY=sk-your-key-here
-LLM_MODEL=gpt-4o
-LLM_PROVIDER=openai
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Application Settings
 LOG_LEVEL=DEBUG
+PORT=8000
+```
+
+### Using the Model Invocation Strategy
+
+```python
+from llm import ModelInvocationStrategy, UseCase
+
+# Initialize strategy (loads config at import time)
+strategy = ModelInvocationStrategy()
+
+# Get LLM for a specific use case
+llm = strategy.get_llm_for_use_case(UseCase.PLANNER)
+
+# Get formatted prompt for a use case
+prompt = strategy.get_prompt_for_use_case(
+    UseCase.PLANNER,
+    query="Book a flight from NYC to LON",
+    preference_summary="Prefers: economy class, aisle seat"
+)
+
+# Use the LLM
+response = llm.invoke(prompt)
 ```
 
 ---
@@ -708,11 +895,15 @@ Test coverage includes:
 
 ```python
 from agents.orchestration import Orchestrator
-from agents.core.llm_provider import create_llm_provider
+from llm import ModelInvocationStrategy, UseCase
 
-# Initialize with LLM
-llm = create_llm_provider(model_name="gpt-4o", model_provider="openai")
-orch = Orchestrator(llm=llm)
+# Initialize orchestrator (uses Model Invocation Strategy internally)
+orch = Orchestrator()
+
+# The orchestrator automatically uses the configured LLM for each use case
+# You can also manually get LLMs for specific use cases:
+strategy = ModelInvocationStrategy()
+planner_llm = strategy.get_llm_for_use_case(UseCase.PLANNER)
 
 # Execute user intent
 intent = {
@@ -723,6 +914,28 @@ intent = {
 }
 
 results = orch.run_intent(intent)
+```
+
+### Using Model Invocation Strategy Directly
+
+```python
+from llm import ModelInvocationStrategy, UseCase
+
+strategy = ModelInvocationStrategy()
+
+# Get LLM for a specific use case (configured in model_strategy.yaml)
+llm = strategy.get_llm_for_use_case(UseCase.PLANNER)
+
+# Get formatted prompt with template variables
+prompt = strategy.get_prompt_for_use_case(
+    UseCase.PLANNER,
+    query="Book a flight from NYC to LON",
+    preference_summary="Prefers: economy class, aisle seat"
+)
+
+# Invoke LLM
+response = llm.invoke(prompt)
+structured_response = llm.invoke_structured(prompt, response_format={"status": "string"})
 ```
 
 ### API Usage (Python)

@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from langchain.tools import tool
 from agents.core.base_agent import BaseAgent
 from utils.logger import get_logger, log_method_entry_exit
+from llm.strategy.use_cases import UseCase
 
 if TYPE_CHECKING:
     from api.context import TravelContext
@@ -326,24 +327,36 @@ class ItineraryAgent(BaseAgent):
         # Use LLM routing if available
         if self.llm:
             logger.debug(f"Task '{task}' not found, using LLM routing")
-            return self._llm_route_task(task, params)
+            return self._llm_route_task(task, params, ctx)
         
         logger.warning(f"Unknown task '{task}' for ItineraryAgent")
         return {"error": f"Unknown task '{task}' for ItineraryAgent"}
     
     @log_method_entry_exit(level="DEBUG")
-    def _llm_route_task(self, task: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Use LLM to route ambiguous tasks to appropriate tools"""
+    def _llm_route_task(self, task: str, params: Dict[str, Any], ctx: Optional["TravelContext"] = None) -> Dict[str, Any]:
+        """Use LLM to route ambiguous tasks to appropriate tools - prompt from prompts.yaml"""
         display_params = {k: v for k, v in params.items() if not k.startswith('_')}
-        
         available_tools = ", ".join(self.get_available_tools())
-        prompt = f"""You are an Itinerary Management Agent. Based on the task and parameters, determine which tool to use.
-
-Available tools: {available_tools}
-Task: {task}
-Parameters: {display_params}
-
-Respond with only the tool name to use."""
+        
+        # Get prompt from prompts.yaml via model_strategy
+        if ctx and ctx.model_strategy:
+            try:
+                prompt = ctx.model_strategy.get_prompt_for_use_case(
+                    UseCase.TASK_ROUTING,
+                    agent_name="Itinerary Management Agent",
+                    available_tools=available_tools,
+                    task=task,
+                    params=display_params
+                )
+                logger.debug("Retrieved task routing prompt from prompts.yaml")
+            except Exception as e:
+                logger.error(f"Failed to get prompt from prompts.yaml: {e}")
+                raise ValueError(f"Cannot proceed without prompt from prompts.yaml: {e}") from e
+        else:
+            raise ValueError(
+                "TravelContext with model_strategy is required. "
+                "Prompt must come from prompts.yaml."
+            )
         
         logger.debug(f"Using LLM to route task '{task}' to appropriate tool")
         tool_name = self.llm.invoke(prompt).strip()

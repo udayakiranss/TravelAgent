@@ -4,6 +4,8 @@ from typing import Dict, Any, Optional, Literal
 import json
 from agents.core.llm_provider import LLMProvider
 from utils.logger import get_logger, log_method_entry_exit
+from llm.strategy.model_strategy import ModelInvocationStrategy
+from llm.strategy.use_cases import UseCase
 
 logger = get_logger()
 
@@ -14,7 +16,8 @@ OutputFormat = Literal["key_value", "structured", "json"]
 class ResponseFormatter:
     """Formats agent results into natural language summaries using LLM"""
     
-    def __init__(self, llm: Optional[LLMProvider] = None, output_format: OutputFormat = "key_value"):
+    def __init__(self, llm: Optional[LLMProvider] = None, output_format: OutputFormat = "key_value", 
+                 model_strategy: Optional[ModelInvocationStrategy] = None):
         """
         Initialize the response formatter
         
@@ -24,9 +27,11 @@ class ResponseFormatter:
                           - "key_value": Simple key: value pairs (default)
                           - "structured": Formatted text with sections
                           - "json": Raw JSON output
+            model_strategy: Optional ModelInvocationStrategy to get prompt from prompts.yaml
         """
         self.llm = llm
         self.output_format = output_format
+        self.model_strategy = model_strategy
         logger.debug(f"ResponseFormatter initialized with format: {output_format}")
     
     @log_method_entry_exit(level="INFO")
@@ -64,47 +69,39 @@ class ResponseFormatter:
             return self._fallback_format(results, intent)
     
     def _build_prompt(self, results: Dict[str, Any], intent: Dict[str, Any]) -> str:
-        """Build the LLM prompt for formatting results"""
+        """Build the LLM prompt for formatting results - must come from prompts.yaml"""
         
         # Extract key information from intent
         origin = intent.get('from', 'Unknown')
         destination = intent.get('to', 'Unknown')
         date = intent.get('date', 'Unknown')
         needs = intent.get('needs', [])
+        services = ', '.join(needs) if needs else 'Not specified'
         
         # Serialize results for the prompt
         results_json = json.dumps(results, indent=2, default=str)
         
-        prompt = f"""You are a friendly travel assistant. Convert the following booking results into a warm, conversational summary for the traveler.
-
-**Travel Request:**
-- Origin: {origin}
-- Destination: {destination}
-- Travel Date: {date}
-- Services Requested: {', '.join(needs) if needs else 'Not specified'}
-
-**Booking Results (JSON):**
-{results_json}
-
-**Instructions:**
-1. Create a friendly, well-formatted summary of the travel booking
-2. Start with a welcoming header mentioning the destination
-3. For each booking (flight, hotel, car, itinerary), provide key details in a readable format:
-   - Flight: airline, departure/arrival times, duration, price
-   - Hotel: name, location, price per night, rating if available
-   - Car: vehicle type, rental company, daily rate
-   - Itinerary: summary of all bookings and total cost
-4. If any booking failed or has an error, mention it politely and suggest alternatives
-5. End with the total estimated cost and a friendly closing message
-6. Use natural dates (e.g., "April 1st" instead of "2026-04-01")
-7. Format prices with currency symbols (e.g., "$350")
-8. Keep the response concise but informative (around 150-250 words)
-9. Do NOT use markdown formatting or special characters - use plain text with simple line breaks
-
-Generate the natural language summary:"""
-
-        logger.debug(f"Built prompt with {len(prompt)} characters")
-        return prompt
+        # Prompt must come from prompts.yaml via model_strategy
+        if not self.model_strategy:
+            raise ValueError(
+                "model_strategy is required. Prompt must come from prompts.yaml. "
+                "Ensure ResponseFormatter is initialized with model_strategy."
+            )
+        
+        try:
+            prompt = self.model_strategy.get_prompt_for_use_case(
+                UseCase.SUMMARY_GENERATION,
+                origin=origin,
+                destination=destination,
+                date=date,
+                services=services,
+                results_json=results_json
+            )
+            logger.debug(f"Retrieved prompt from prompts.yaml ({len(prompt)} characters)")
+            return prompt
+        except Exception as e:
+            logger.error(f"Failed to get prompt from prompts.yaml: {e}")
+            raise ValueError(f"Cannot proceed without prompt from prompts.yaml: {e}") from e
     
     def _fallback_format(self, results: Dict[str, Any], intent: Dict[str, Any]) -> str:
         """Fallback formatter when LLM is unavailable - uses configured output_format"""

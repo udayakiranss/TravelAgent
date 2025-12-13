@@ -14,14 +14,16 @@ This plan designs a centralized model invocation strategy for the travel booking
 ## Design Decisions
 
 ### Configuration Design
+
 - **Format**: YAML (readable, easy to edit manually)
 - **Location**: `llm/config/` directory (co-located with code)
 - **Loading**: At import time (simpler, fail fast on errors)
 - **Overrides**: Explicit per use case, merge with defaults (only override specified keys)
 - **Validation**: No strict validation - allow any parameter override, fail at runtime if unsupported
-- **Environment Variables**: Not supported initially (enhancement for later)
+- **Environment Variables**: Supported for secrets. Config files store the *name* of the env var (e.g. `OPENAI_API_KEY`), not the value. Values are loaded from `os.environ` at runtime.
 
 ### Prompt Repository
+
 - **Storage**: Single `prompts.yaml` file
 - **Templating**: F-string style variable substitution
 - **Reference**: Use cases reference prompts by ID
@@ -30,16 +32,19 @@ This plan designs a centralized model invocation strategy for the travel booking
 - **Inline Overrides**: Supported for complex dynamic prompts
 
 ### Error Handling
+
 - **Config Loading**: Fail fast (raise exceptions if config missing/invalid)
 - **Runtime**: Fail fast (raise exceptions for missing prompts, invalid references)
 - **No Graceful Degradation**: Catch issues early, don't silently fail
 
 ### Migration Strategy
+
 - **Approach**: Big bang (move everything at once)
 - **Timeline**: Since not live, can do clean break
 - **Scope**: Update all imports, remove old code
 
 ### Testing Strategy
+
 - **Unit Tests**: Each module (`llm/strategy/`, `llm/providers/`, `llm/prompts/`)
 - **Integration Tests**: Full flow (use case → LLM → response)
 - **Config Validation Tests**: Invalid configs, missing files, schema validation
@@ -86,17 +91,20 @@ travel-agents/
 ### Module Responsibilities
 
 #### `llm/strategy/`
+
 - **model_strategy.py**: Main entry point, orchestrates LLM selection and prompt retrieval
 - **use_cases.py**: UseCase enum defining all use cases
 - **config_loader.py**: Load and validate YAML configs, fail fast on errors
 - **resolver.py**: Merge provider defaults, global defaults, and use case overrides
 
 #### `llm/providers/`
+
 - **base.py**: Abstract base class for providers
 - **factory.py**: Create provider instances based on config
 - **capabilities.py**: Detect and validate provider capabilities
 
 #### `llm/prompts/`
+
 - **repository.py**: Load prompts from YAML, cache, template substitution
 - **template.py**: F-string style variable substitution
 
@@ -125,6 +133,11 @@ prompt = strategy.get_prompt_for_use_case(
 ### YAML Structure
 
 **`llm/config/model_strategy.yaml`**:
+
+> [!CAUTION]
+> **Security Warning**: Do NOT store actual API keys or secrets in this YAML file.
+> Always use `api_key_env` to reference the environment variable name (e.g. `OPENAI_API_KEY`).
+> The application will read the value from the environment at runtime.
 
 ```yaml
 use_cases:
@@ -410,6 +423,7 @@ prompts:
 ## Implementation Approach
 
 ### Phase 1: Create LLM Module Structure
+
 1. Create `llm/` directory structure
 2. Create `llm/__init__.py` with public API
 3. Create `llm/strategy/` module with placeholder files
@@ -418,6 +432,7 @@ prompts:
 6. Create `llm/config/` directory with YAML files
 
 ### Phase 2: Implement Core Components
+
 1. **Config Loader** (`llm/strategy/config_loader.py`)
    - Load YAML files at import time
    - Validate structure (fail fast)
@@ -442,6 +457,7 @@ prompts:
    - `get_prompt_for_use_case()` - returns prompt string
 
 ### Phase 3: Provider Integration
+
 1. **Provider Factory** (`llm/providers/factory.py`)
    - Create LLMProvider instances based on config
    - Handle provider-specific settings (JSON mode, etc.)
@@ -451,12 +467,14 @@ prompts:
    - Map provider names to implementations
 
 ### Phase 4: Integration & Migration
+
 1. Update all LLM call sites to use `llm` module
 2. Update imports across codebase
 3. Remove old `agents/core/llm_provider.py` (or refactor to use `llm/`)
 4. Update tests
 
 ### Phase 5: Testing
+
 1. Unit tests for each module
 2. Integration tests for full flow
 3. Config validation tests
@@ -475,6 +493,7 @@ prompts:
 ### Files to Modify
 
 **LLM Call Sites** (10 locations):
+
 - `agents/planning/planner.py`
 - `agents/planning/deterministic_planner.py`
 - `agents/orchestration/orchestrator.py`
@@ -487,6 +506,7 @@ prompts:
 - `api/dependencies.py`
 
 **Dependencies**:
+
 - `api/dependencies.py` - Update LLM provider dependency
 - `api/services/planning_service.py` - May need updates
 - All test files - Update mocks and imports
@@ -496,15 +516,18 @@ prompts:
 ### Unit Tests
 
 **`llm/strategy/`**:
+
 - `test_config_loader.py` - Config loading, validation, error cases
 - `test_resolver.py` - Override merging logic
 - `test_model_strategy.py` - LLM selection, prompt retrieval
 
 **`llm/providers/`**:
+
 - `test_factory.py` - Provider instance creation
 - `test_capabilities.py` - Capability detection
 
 **`llm/prompts/`**:
+
 - `test_repository.py` - Prompt loading, caching
 - `test_template.py` - Variable substitution
 
@@ -568,4 +591,3 @@ prompts:
 7. **Long-term scalability**: Clean module structure for future enhancements
 8. **Type safety**: UseCase enum prevents typos
 9. **Clear separation**: LLM concerns isolated from business logic
-

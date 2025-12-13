@@ -60,6 +60,7 @@ class TestPlanner:
     def test_llm_generated_plan_executable(self):
         class FakeLLM(LLMProvider):
             def __init__(self, payload):
+                super().__init__(model_name="fake-model", temperature=0)
                 self.payload = payload
 
             def invoke(self, prompt: str, **kwargs):
@@ -67,6 +68,10 @@ class TestPlanner:
 
             def invoke_structured(self, prompt: str, response_format, **kwargs):
                 return self.payload
+            
+            def bind_tools(self, tools: list):
+                """Mock bind_tools - returns self as a runnable."""
+                return self
 
         llm_payload = {
             "status": "executable",
@@ -106,9 +111,17 @@ class TestPlanner:
             },
         }
 
+        from unittest.mock import Mock
+        from llm import ModelInvocationStrategy
+        
         llm = FakeLLM(llm_payload)
-        planner = TravelPlanner(llm=llm)
-        ctx = TravelContext(session=None, llm=llm, traveler_id="trav_1")
+        # Create mock strategy that provides the prompt
+        mock_strategy = Mock(spec=ModelInvocationStrategy)
+        mock_strategy.get_prompt_for_use_case.return_value = "Generate an execution plan for: Book a flight NYC to LON on 2025-08-12"
+        mock_strategy.get_llm_for_use_case.return_value = llm
+        
+        planner = TravelPlanner(llm=llm, strategy=mock_strategy)
+        ctx = TravelContext(session=None, llm=llm, model_strategy=mock_strategy, traveler_id="trav_1")
 
         plan = planner.create_plan_from_query("Book a flight NYC to LON on 2025-08-12", ctx)
         assert plan.status == "executable"
@@ -118,11 +131,18 @@ class TestPlanner:
 
     def test_llm_plan_failure_falls_back(self):
         class FailingLLM(LLMProvider):
+            def __init__(self):
+                super().__init__(model_name="failing-model", temperature=0)
+
             def invoke(self, prompt: str, **kwargs):
                 return "not-json"
 
             def invoke_structured(self, prompt: str, response_format, **kwargs):
                 return {"raw_response": "not-json"}
+            
+            def bind_tools(self, tools: list):
+                """Mock bind_tools - returns self as a runnable."""
+                return self
 
         llm = FailingLLM()
         planner = TravelPlanner(llm=llm)

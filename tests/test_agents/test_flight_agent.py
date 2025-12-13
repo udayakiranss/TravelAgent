@@ -52,11 +52,20 @@ class TestFlightBookingAgent:
         assert isinstance(result, list)
 
     def test_execute_unknown_tool_with_llm(self, agent, mock_llm):
+        from unittest.mock import Mock
+        from api.context import TravelContext
+        from llm import ModelInvocationStrategy
+        
         # Mock LLM to return a valid tool name
         mock_llm.invoke.return_value = "search_flights"
         
+        # Create mock strategy and ctx
+        mock_strategy = Mock(spec=ModelInvocationStrategy)
+        mock_strategy.get_prompt_for_use_case.return_value = "You are a Flight Booking Agent. Based on the task and parameters, determine which tool to use.\n\nAvailable tools: search_flights, compare_flights, book_flight\nTask: find_flights\nParameters: {'from': 'NYC', 'to': 'LON', 'date': '2025-08-12'}\n\nRespond with only the tool name to use."
+        ctx = TravelContext(session=None, llm=mock_llm, model_strategy=mock_strategy, traveler_id="test")
+        
         params = {"from": "NYC", "to": "LON", "date": "2025-08-12"}
-        result = agent.execute("find_flights", params) # Ambiguous task
+        result = agent.execute("find_flights", params, ctx) # Ambiguous task
         
         mock_llm.invoke.assert_called_once()
         assert isinstance(result, list)

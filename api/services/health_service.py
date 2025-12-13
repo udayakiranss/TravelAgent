@@ -1,13 +1,16 @@
 """
 Health service for checking system status.
 """
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from sqlmodel import Session
 from sqlalchemy import text
 
-from agents.core import LLMProvider
 from api.schemas import HealthResponse
 from utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from llm import ModelInvocationStrategy
+    from llm.strategy.use_cases import UseCase
 
 logger = get_logger()
 
@@ -15,20 +18,24 @@ logger = get_logger()
 class HealthService:
     """Service for health check operations."""
     
-    def __init__(self, db: Session, llm: Optional[LLMProvider]):
+    def __init__(self, db: Session, strategy: Optional["ModelInvocationStrategy"] = None):
         """
         Initialize health service.
         
         Args:
             db: Database session
-            llm: Optional LLM provider
+            strategy: Optional Model Invocation Strategy (preferred)
+                     If None, LLM health check will show as unavailable
         """
         self.db = db
-        self.llm = llm
+        self.strategy = strategy
     
     def check_health(self) -> HealthResponse:
         """
         Check health of database and LLM services.
+        
+        Uses ModelInvocationStrategy to check LLM availability by attempting
+        to get an LLM for a use case (planner).
         
         Returns:
             HealthResponse with status of all components
@@ -43,8 +50,19 @@ class HealthService:
             db_status = "error"
             logger.error(f"Database health check failed: {e}")
         
-        # Check LLM
-        llm_status = "available" if self.llm else "unavailable"
+        # Check LLM via ModelInvocationStrategy
+        llm_status = "unavailable"
+        if self.strategy:
+            try:
+                # Try to get an LLM for planner use case to verify configuration is valid
+                from llm.strategy.use_cases import UseCase
+                llm = self.strategy.get_llm_for_use_case(UseCase.PLANNER)
+                llm_status = "available" if llm else "unavailable"
+            except Exception as e:
+                logger.warning(f"LLM health check failed: {e}")
+                llm_status = "unavailable"
+        else:
+            logger.debug("No ModelInvocationStrategy provided, LLM status unavailable")
         
         # Overall status
         overall = "healthy"

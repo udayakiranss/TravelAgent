@@ -13,8 +13,8 @@ class TestCarRentalAgent:
         assert isinstance(results, list)
         
     def test_book_car_tool(self):
-        # Assuming C11 exists
-        query = {"car_id": "C11", "driver_name": "Test User"}
+        # Use a valid car ID (C001 exists in data/cars.py)
+        query = {"car_id": "C001", "renter_name": "Test User"}
         result = book_car_tool.invoke({"query": query})
         assert result["status"] == "confirmed"
         

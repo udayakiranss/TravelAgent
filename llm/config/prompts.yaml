@@ -1,0 +1,104 @@
+prompts:
+  planner_base:
+    system: null
+    user: |
+      Planner: Parse query, generate tasks. Return JSON only.
+      
+      Query: {query}
+      Preferences: {preference_summary}
+      
+      Return JSON with: status ('executable' or 'needs_clarification'), missing_info (array), tasks (array), plan_metadata (object).
+      If missing critical info (origin/destination/date for flights, city for hotels/cars), set status='needs_clarification' with missing_info.
+      Tasks: Each task needs id (string like 't1'), title, agent, action, description, input_schema (object), params (object), output_schema (object), dependencies (array of task id strings), parallelizable (boolean).
+      Agents: FlightBookingAgent, HotelBookingAgent, CarRentalAgent, ItineraryAgent, PaymentAgent.
+      Actions: search_flights, search_hotels, search_cars, build_itinerary, process_payment.
+      plan_metadata: plan_id (string), created_at (ISO string), planner_version (string), confidence_score (number), conversation_turns (number).
+
+  intent_parsing_base:
+    system: null
+    user: |
+      Parse the following user query about travel booking into a structured intent format.
+      
+      User Query: "{text}"
+      
+      Traveler Preferences: {preference_summary}
+      
+      Extract the following information:
+      - needs: List of services needed (flight, hotel, car, itinerary)
+      - from: Origin airport code (3 letters, uppercase)
+      - to: Destination airport code (3 letters, uppercase)
+      - date: Travel date in YYYY-MM-DD format
+      
+      Note: Consider the traveler's preferences when interpreting ambiguous requests.
+      Return ONLY a valid JSON object with these fields.
+
+  intent_parsing_tool_binding:
+    system: null
+    user: |
+      Parse the following user query about travel booking into a structured intent format.
+      
+      User Query: "{text}"
+      
+      Traveler ID: {traveler_id}
+      Traveler Preferences Summary: {preference_summary}
+      
+      If you need detailed preferences (loyalty program numbers, dietary restrictions, accessibility needs, or past booking patterns), use the load_full_preferences tool.
+      
+      Extract the following information:
+      - needs: List of services needed (flight, hotel, car, itinerary)
+      - from: Origin airport code (3 letters, uppercase)
+      - to: Destination airport code (3 letters, uppercase)
+      - date: Travel date in YYYY-MM-DD format
+      
+      Return ONLY a valid JSON object with these fields.
+
+  modification_base:
+    system: You are a travel agent assistant.
+    user: |
+      You are a travel agent assistant. Based on the current itinerary state and user instruction, determine what needs to be modified.
+      
+      Current Itinerary State:
+      {current_state}
+      
+      Previous Conversation:
+      {history_text}
+      
+      User Instruction: {instruction}
+      
+      Analyze the instruction and respond with a JSON object containing:
+      - "component": which component to modify ("flight", "hotel", or "car")
+      - "action": what action to take ("search_new", "remove", "update")
+      - "parameters": any search parameters extracted from the instruction
+      
+      Respond with ONLY the JSON object.
+
+  summary_generation_base:
+    system: You are a friendly travel assistant.
+    user: |
+      Summarize the booking in a warm, concise tone. Plain text, no markdown.
+      
+      Travel Request: {origin} → {destination} on {date}
+      Services: {services}
+      Booking Results: {results_json}
+      
+      Include:
+      • Header with destination
+      • Flight details (airline, times, duration, price)
+      • Hotel (name, location, price, rating)
+      • Car (or say unavailable)
+      • Total cost + friendly close
+      • Natural dates (e.g., "April 1st")
+      • Prices with currency symbol (e.g., "$350")
+      
+      150-200 words.
+
+  task_routing_base:
+    system: You are a {agent_name}.
+    user: |
+      You are a {agent_name}. Based on the task and parameters, determine which tool to use.
+      
+      Available tools: {available_tools}
+      Task: {task}
+      Parameters: {params}
+      
+      Respond with only the tool name to use.

@@ -13,6 +13,7 @@ from agents.planning.schemas import ExecutionPlan, PlanMetadata
 from agents.planning.deterministic_planner import DeterministicPlanner, DEFAULTS
 from agents.planning.alias_resolver import AliasResolver
 from utils.logger import get_logger, _format_duration
+from llm import ModelInvocationStrategy, UseCase
 
 if TYPE_CHECKING:
     from api.context import TravelContext
@@ -31,6 +32,7 @@ class TravelPlanner:
     def __init__(
         self,
         llm: Optional[LLMProvider] = None,
+        strategy: Optional[ModelInvocationStrategy] = None,
         alias_map_path: Optional[str] = None,
         planner_version: str = "1.0.0",
     ):
@@ -38,11 +40,13 @@ class TravelPlanner:
         Initialize travel planner.
         
         Args:
-            llm: Optional LLM provider
+            llm: Optional LLM provider (Legacy)
+            strategy: Model Strategy (Preferred)
             alias_map_path: Path to alias map JSON file
             planner_version: Planner version string
         """
         self.llm = llm
+        self.strategy = strategy
         self.planner_version = planner_version
         
         # Create deterministic planner for fallback
@@ -149,8 +153,16 @@ class TravelPlanner:
         )
         start_time = time.perf_counter()
         
-        # Get LLM from context or planner instance
-        llm = ctx.llm or self.llm
+        # Get LLM from context strategy (preferred), planner strategy, or legacy llm
+        llm = None
+        if ctx.model_strategy:
+            llm = ctx.model_strategy.get_llm_for_use_case(UseCase.PLANNER)
+        elif self.strategy:
+            llm = self.strategy.get_llm_for_use_case(UseCase.PLANNER)
+        
+        # Fallback to legacy
+        if not llm:
+            llm = ctx.llm or self.llm
         preference_summary = getattr(ctx, "preference_summary", None) or "No preferences set"
 
         plan: Optional[ExecutionPlan] = None
@@ -193,7 +205,30 @@ class TravelPlanner:
         ctx: "TravelContext",
     ) -> Optional[ExecutionPlan]:
         """Ask LLM to emit full ExecutionPlan JSON per design spec."""
-        plan_prompt = self._build_plan_prompt(query, preference_summary)
+        # Get prompt from strategy (prompts.yaml) - required per design
+        # Prompts must be stored in prompts.yaml, not hardcoded
+        strategy_to_use = ctx.model_strategy or self.strategy
+        
+        if not strategy_to_use:
+            logger.warning(
+                "No model_strategy available. Prompt must come from prompts.yaml. "
+                "Falling back to deterministic planner."
+            )
+            return None
+        
+        try:
+            plan_prompt = strategy_to_use.get_prompt_for_use_case(
+                UseCase.PLANNER, 
+                query=query, 
+                preference_summary=preference_summary
+            )
+            logger.debug("Retrieved planner prompt from prompts.yaml")
+        except Exception as e:
+            logger.error(
+                f"Failed to load prompt from prompts.yaml: {e}. "
+                "Falling back to deterministic planner."
+            )
+            return None
         response_format = {
             "type": "object",
             "properties": {
@@ -488,28 +523,6 @@ class TravelPlanner:
         
         return plan
 
-    def _build_plan_prompt(self, query: str, preference_summary: str) -> str:
-        """
-        Construct optimized LLM prompt (Phase 1: Compressed from ~700 to ~200 tokens).
-        
-        Removed from prompt (moved to post-processing):
-        - Alias map entries (normalized in Python)
-        - Defaults JSON (applied in Python)
-        - Mandatory field rules (validated in Python)
-        - DAG rules (enforced in Python)
-        - Verbose instructions (condensed)
-        """
-        return (
-            "Planner: Parse query, generate tasks. Return JSON only.\n\n"
-            f"Query: {query}\n"
-            f"Preferences: {preference_summary}\n\n"
-            "Return JSON with: status ('executable' or 'needs_clarification'), missing_info (array), tasks (array), plan_metadata (object).\n"
-            "If missing critical info (origin/destination/date for flights, city for hotels/cars), set status='needs_clarification' with missing_info.\n"
-            "Tasks: Each task needs id (string like 't1'), title, agent, action, description, input_schema (object), params (object), output_schema (object), dependencies (array of task id strings), parallelizable (boolean).\n"
-            "Agents: FlightBookingAgent, HotelBookingAgent, CarRentalAgent, ItineraryAgent, PaymentAgent.\n"
-            "Actions: search_flights, search_hotels, search_cars, build_itinerary, process_payment.\n"
-            "plan_metadata: plan_id (string), created_at (ISO string), planner_version (string), confidence_score (number), conversation_turns (number)."
-        )
 
 
 # Backward-compatible helper

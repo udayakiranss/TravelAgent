@@ -16,6 +16,7 @@ from agents.planning import TravelPlanner
 from agents.core import create_llm_provider, LLMProvider
 from api.context import TravelContext
 from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
+from llm import ModelInvocationStrategy, UseCase
 from api.services import (
     ItineraryService,
     PreferenceService,
@@ -61,6 +62,8 @@ PROVIDER_API_KEY_NAMES = {
 }
 
 # Default models per provider
+# NOTE: This is part of the legacy LLM provider path.
+# Production code should use llm/config/model_strategy.yaml instead.
 PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o",
     "google_genai": "gemini-2.0-flash",
@@ -71,7 +74,13 @@ PROVIDER_DEFAULT_MODELS = {
 
 
 def get_llm_provider_name() -> str:
-    """Get the configured LLM provider name."""
+    """
+    Get the configured LLM provider name.
+    
+    .. deprecated::
+        Environment variable LLM_PROVIDER is deprecated.
+        Use llm/config/model_strategy.yaml instead.
+    """
     return os.getenv('LLM_PROVIDER', 'openai')
 
 
@@ -82,7 +91,13 @@ def get_expected_api_key_name() -> str:
 
 
 def get_default_model() -> str:
-    """Get the default model for the current provider."""
+    """
+    Get the default model for the current provider.
+    
+    .. deprecated::
+        This function is part of the legacy LLM provider path.
+        Use llm/config/model_strategy.yaml instead.
+    """
     provider = get_llm_provider_name()
     return PROVIDER_DEFAULT_MODELS.get(provider, "gpt-4o")
 
@@ -93,7 +108,26 @@ def get_llm_provider() -> Optional[LLMProvider]:
     Get cached LLM provider instance.
     Lets LangChain handle API key detection automatically.
     Returns None if initialization fails (typically due to missing API key).
+    
+    .. deprecated::
+        This function uses legacy environment variables (LLM_MODEL, LLM_PROVIDER) 
+        and bypasses the centralized model_strategy.yaml configuration.
+        
+        **Use `ModelInvocationStrategy` instead** for production code:
+        - Use `get_model_strategy()` dependency
+        - Call `strategy.get_llm_for_use_case(UseCase.PLANNER)` etc.
+        
+        This function is kept for backward compatibility only.
     """
+    import warnings
+    warnings.warn(
+        "get_llm_provider() is deprecated. Use ModelInvocationStrategy via "
+        "get_model_strategy() instead. Environment variables LLM_MODEL and "
+        "LLM_PROVIDER are deprecated - use llm/config/model_strategy.yaml instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    
     provider = get_llm_provider_name()
     model = os.getenv('LLM_MODEL', get_default_model())
     
@@ -114,6 +148,11 @@ def get_llm_provider() -> Optional[LLMProvider]:
         return None
 
 
+@lru_cache()
+def get_model_strategy() -> ModelInvocationStrategy:
+    """Get the singleton ModelInvocationStrategy instance."""
+    return ModelInvocationStrategy()
+
 def get_llm() -> Optional[LLMProvider]:
     """Dependency that provides an LLM provider (may be None)."""
     return get_llm_provider()
@@ -127,6 +166,7 @@ def get_context(
     request: Request,
     db: Session = Depends(get_db),
     llm: Optional[LLMProvider] = Depends(get_llm),
+    strategy: ModelInvocationStrategy = Depends(get_model_strategy),
 ) -> TravelContext:
     """
     Create a TravelContext for the current request.
@@ -150,6 +190,7 @@ def get_context(
     return TravelContext(
         session=db,
         llm=llm,
+        model_strategy=strategy,
         request_id=request_id,
         traveler_id="",  # Set by route from request body
         criteria=DEFAULT_SELECTION_CRITERIA,  # May be overridden by route
@@ -165,7 +206,7 @@ _orchestrator_instance: Optional[Orchestrator] = None
 
 
 def get_orchestrator(
-    llm: Optional[LLMProvider] = Depends(get_llm),
+    strategy: ModelInvocationStrategy = Depends(get_model_strategy),
 ) -> Orchestrator:
     """
     Get or create an Orchestrator instance.
@@ -176,7 +217,7 @@ def get_orchestrator(
     global _orchestrator_instance
     
     if _orchestrator_instance is None:
-        _orchestrator_instance = Orchestrator(llm=llm, memory=None)
+        _orchestrator_instance = Orchestrator(strategy=strategy, memory=None)
     
     return _orchestrator_instance
 
@@ -190,7 +231,7 @@ _planner_instance: Optional[TravelPlanner] = None
 
 
 def get_planner(
-    llm: Optional[LLMProvider] = Depends(get_llm),
+    strategy: ModelInvocationStrategy = Depends(get_model_strategy),
 ) -> TravelPlanner:
     """
     Get or create a TravelPlanner instance.
@@ -201,7 +242,7 @@ def get_planner(
     global _planner_instance
     
     if _planner_instance is None:
-        _planner_instance = TravelPlanner(llm=llm)
+        _planner_instance = TravelPlanner(strategy=strategy)
     
     return _planner_instance
 
@@ -219,12 +260,12 @@ def startup_event():
     # Create database tables
     create_db_and_tables()
     
-    # Pre-warm LLM provider cache
-    llm = get_llm_provider()
+    # Pre-warm LLM strategy (loads config)
+    strategy = get_model_strategy()
     
     # Pre-initialize orchestrator with agents (P2: avoid per-request init)
     if _orchestrator_instance is None:
-        _orchestrator_instance = Orchestrator(llm=llm, memory=None)
+        _orchestrator_instance = Orchestrator(strategy=strategy, memory=None)
 
 
 def shutdown_event():
@@ -286,19 +327,19 @@ def get_search_service() -> SearchService:
 
 def get_health_service(
     db: Session = Depends(get_db),
-    llm: Optional[LLMProvider] = Depends(get_llm),
+    strategy: ModelInvocationStrategy = Depends(get_model_strategy),
 ) -> HealthService:
     """
     Get HealthService instance for the current request.
     
     Args:
         db: Database session
-        llm: Optional LLM provider
+        strategy: Model Invocation Strategy for LLM health checks
     
     Returns:
         HealthService instance
     """
-    return HealthService(db, llm)
+    return HealthService(db, strategy)
 
 
 def get_conversation_service(

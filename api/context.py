@@ -15,6 +15,7 @@ from api.config import SelectionCriteria, DEFAULT_SELECTION_CRITERIA
 if TYPE_CHECKING:
     from database.models import Itinerary, ChatHistory
     from agents.llm_provider import LLMProvider
+    from llm import ModelInvocationStrategy
 
 
 @dataclass
@@ -31,7 +32,10 @@ class TravelContext:
     """Database session for this request."""
     
     llm: Optional["LLMProvider"]
-    """LLM provider for NL processing (may be None if unavailable)."""
+    """LLM provider (Deprecated: usage should move to model_strategy)."""
+
+    model_strategy: Optional["ModelInvocationStrategy"] = None
+    """Model Invocation Strategy for retrieving configured LLMs."""
     
     request_id: str = field(default_factory=lambda: str(uuid4()))
     """Unique identifier for this request (for logging correlation)."""
