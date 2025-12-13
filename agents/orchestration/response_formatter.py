@@ -54,8 +54,8 @@ class ResponseFormatter:
         prompt = self._build_prompt(results, intent)
         
         try:
-            # Generate natural language summary
-            summary = self.llm.invoke(prompt)
+            # Generate natural language summary (disable JSON mode for plain text response)
+            summary = self.llm.invoke(prompt, disable_json_mode=True)
             logger.info("Successfully generated natural language summary")
             return summary.strip()
         except Exception as e:

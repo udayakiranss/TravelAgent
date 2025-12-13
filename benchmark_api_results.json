@@ -1,0 +1,47 @@
+[
+  {
+    "query": "Book a flight from NYC to London on 2025-08-12",
+    "latency_ms": 12.718291333333326,
+    "status_code": 200,
+    "response_size": 741,
+    "plan_status": "executable",
+    "task_count": null,
+    "error": null
+  },
+  {
+    "query": "Plan a trip from New York to Paris on 2025-09-01 with hotel and car rental",
+    "latency_ms": 4.481763999999999,
+    "status_code": 400,
+    "response_size": 430,
+    "plan_status": null,
+    "task_count": null,
+    "error": "HTTP 400"
+  },
+  {
+    "query": "I need a flight from San Francisco to Chicago on 2025-10-15, a hotel for 3 nights, and a rental car",
+    "latency_ms": 6.26372199999999,
+    "status_code": 400,
+    "response_size": 696,
+    "plan_status": null,
+    "task_count": null,
+    "error": "HTTP 400"
+  },
+  {
+    "query": "Flight from JFK to LHR on 2025-11-20",
+    "latency_ms": 6.67461133333333,
+    "status_code": 200,
+    "response_size": 398,
+    "plan_status": "executable",
+    "task_count": null,
+    "error": null
+  },
+  {
+    "query": "Plan complete trip: flight NYC to Paris, hotel in Paris, car rental, return flight on 2025-12-01",
+    "latency_ms": 4.251638666666668,
+    "status_code": 400,
+    "response_size": 693,
+    "plan_status": null,
+    "task_count": null,
+    "error": "HTTP 400"
+  }
+]
