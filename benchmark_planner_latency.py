@@ -155,17 +155,27 @@ def benchmark_planner(
             
             latencies.append(latency_ms)
             
-            # Get prompt size from LLM if it's a mock
-            if hasattr(ctx.llm, 'last_prompt_size') and ctx.llm.last_prompt_size > 0:
-                prompt_sizes.append(ctx.llm.last_prompt_size)
+            # Get prompt size from LLM if it's a mock (get LLM from strategy)
+            llm = None
+            if ctx.model_strategy:
+                try:
+                    from llm.strategy.use_cases import UseCase
+                    llm = ctx.model_strategy.get_llm_for_use_case(UseCase.PLANNER)
+                except Exception:
+                    pass
+            
+            prompt_size = 0
+            prompt_text = ""
+            if llm and hasattr(llm, 'last_prompt_size') and llm.last_prompt_size > 0:
+                prompt_sizes.append(llm.last_prompt_size)
+                prompt_size = llm.last_prompt_size
+                prompt_text = llm.last_prompt if hasattr(llm, 'last_prompt') else ""
             
             last_result = BenchmarkResult(
                 query=query,
                 latency_ms=latency_ms,
-                prompt_size_chars=ctx.llm.last_prompt_size if hasattr(ctx.llm, 'last_prompt_size') else 0,
-                prompt_size_estimate_tokens=estimate_tokens(
-                    ctx.llm.last_prompt if hasattr(ctx.llm, 'last_prompt') else ""
-                ),
+                prompt_size_chars=prompt_size,
+                prompt_size_estimate_tokens=estimate_tokens(prompt_text),
                 plan_status=plan.status,
                 task_count=len(plan.tasks),
                 token_usage=None,
@@ -230,9 +240,14 @@ def run_benchmark_suite(use_real_llm: bool = False) -> List[BenchmarkResult]:
         print("Using MOCK LLM (simulated 100ms delay)...")
         llm = MockLLMProvider(response_delay_ms=100, track_prompts=True)
     
-    # Create planner and context
-    planner = TravelPlanner(llm=llm)
-    ctx = TravelContext(session=None, llm=llm, traveler_id="benchmark_user")
+    # Create strategy and planner
+    from llm import ModelInvocationStrategy
+    from unittest.mock import Mock
+    # For benchmarking, create a mock strategy that provides the LLM
+    mock_strategy = Mock(spec=ModelInvocationStrategy)
+    mock_strategy.get_llm_for_use_case.return_value = llm
+    planner = TravelPlanner(strategy=mock_strategy)
+    ctx = TravelContext(session=None, model_strategy=mock_strategy, traveler_id="benchmark_user")
     
     print(f"\nRunning {len(test_queries)} test queries ({3} iterations each)...")
     print("-" * 80)

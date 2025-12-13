@@ -59,72 +59,6 @@ class TravelPlanner:
         self.alias_resolver = AliasResolver(alias_map_path=alias_map_path)
 
     # ------------------------------------------------------------------ #
-    # Public API
-    # ------------------------------------------------------------------ #
-    
-    def create_plan(self, intent: Dict[str, Any], traveler_id: str = "") -> ExecutionPlan:
-        """
-        Build a deterministic ExecutionPlan from structured intent.
-        
-        .. deprecated::
-            This method is kept for backward compatibility.
-            For new code, use DeterministicPlanner.create_plan_from_intent() directly.
-        """
-        return self.deterministic_planner.create_plan_from_intent(intent, traveler_id=traveler_id)
-        """
-        Build a deterministic ExecutionPlan from structured intent.
-
-        - Normalize city/airport fields using the alias map (with guardrails).
-        - Detect missing mandatory fields (status=needs_clarification).
-        - Apply defaults to optional fields.
-        - Build tasks with agent+action, params, schemas, dependencies, parallelizable.
-        """
-        normalized_intent, missing_from_norm = self._normalize_intent(intent)
-        missing_fields = missing_from_norm + self._find_missing_mandatory(normalized_intent)
-
-        if missing_fields:
-            plan = ExecutionPlan(
-                status="needs_clarification",
-                missing_info=missing_fields,
-                tasks=[],
-                plan_metadata=self._build_metadata(confidence=0.4),
-            )
-            logger.info(
-                "Planner plan created (needs_clarification)",
-                extra={
-                    "plan_id": plan.plan_metadata.plan_id,
-                    "missing_fields": [mi.field for mi in missing_fields],
-                    "traveler_id": traveler_id,
-                },
-            )
-            return plan
-
-        enriched_intent = self._apply_defaults(normalized_intent)
-        tasks = self._build_tasks(enriched_intent)
-
-        plan = ExecutionPlan(
-            status="executable",
-            missing_info=[],
-            tasks=tasks,
-            plan_metadata=self._build_metadata(confidence=0.94),
-        )
-        
-        # Log detailed task information in message (so it appears in logs)
-        task_summary_lines = []
-        for t in tasks:
-            task_summary_lines.append(
-                f"  [{t.id}] {t.agent}.{t.action} | params={t.params} | deps={t.dependencies} | parallel={t.parallelizable}"
-            )
-        task_summary = "\n".join(task_summary_lines) if task_summary_lines else "  (no tasks)"
-        
-        logger.info(
-            f"Planner plan created (executable) | plan_id={plan.plan_metadata.plan_id} | task_count={len(tasks)} | traveler_id={traveler_id}\n"
-            f"Tasks:\n{task_summary}"
-        )
-        
-        return plan
-
-    # ------------------------------------------------------------------ #
     # LLM plan generation
     # ------------------------------------------------------------------ #
     
@@ -160,9 +94,12 @@ class TravelPlanner:
         elif self.strategy:
             llm = self.strategy.get_llm_for_use_case(UseCase.PLANNER)
         
-        # Fallback to legacy
-        if not llm:
-            llm = ctx.llm or self.llm
+        # Fallback: try to get LLM from planner's strategy if context strategy failed
+        if not llm and self.strategy:
+            try:
+                llm = self.strategy.get_llm_for_use_case(UseCase.PLANNER)
+            except Exception:
+                llm = None
         preference_summary = getattr(ctx, "preference_summary", None) or "No preferences set"
 
         plan: Optional[ExecutionPlan] = None

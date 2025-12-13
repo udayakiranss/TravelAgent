@@ -16,7 +16,7 @@ class TestPlanner:
             "date": None,
         }
 
-        plan = planner.create_plan(intent)
+        plan = planner.deterministic_planner.create_plan_from_intent(intent, traveler_id="")
         assert isinstance(plan, ExecutionPlan)
         assert plan.status == "needs_clarification"
         assert len(plan.missing_info) >= 1
@@ -32,7 +32,7 @@ class TestPlanner:
             "return_date": "2025-08-16",
         }
 
-        plan = planner.create_plan(intent)
+        plan = planner.deterministic_planner.create_plan_from_intent(intent, traveler_id="")
         assert plan.status == "executable"
         agents = [t.agent for t in plan.tasks]
         assert "FlightBookingAgent" in agents
@@ -51,7 +51,7 @@ class TestPlanner:
             "date": "2025-09-01",
         }
 
-        plan = planner.create_plan(intent)
+        plan = planner.deterministic_planner.create_plan_from_intent(intent, traveler_id="")
         assert plan.status == "executable"
         flight_task = next(t for t in plan.tasks if t.agent == "FlightBookingAgent")
         assert flight_task.params["origin"] in {"JFK", "LGA", "EWR", "NYC", "JFK"} or flight_task.params["origin"] == "JFK"
@@ -120,8 +120,8 @@ class TestPlanner:
         mock_strategy.get_prompt_for_use_case.return_value = "Generate an execution plan for: Book a flight NYC to LON on 2025-08-12"
         mock_strategy.get_llm_for_use_case.return_value = llm
         
-        planner = TravelPlanner(llm=llm, strategy=mock_strategy)
-        ctx = TravelContext(session=None, llm=llm, model_strategy=mock_strategy, traveler_id="trav_1")
+        planner = TravelPlanner(strategy=mock_strategy)
+        ctx = TravelContext(session=None, model_strategy=mock_strategy, traveler_id="trav_1")
 
         plan = planner.create_plan_from_query("Book a flight NYC to LON on 2025-08-12", ctx)
         assert plan.status == "executable"
@@ -145,8 +145,12 @@ class TestPlanner:
                 return self
 
         llm = FailingLLM()
-        planner = TravelPlanner(llm=llm)
-        ctx = TravelContext(session=None, llm=llm, traveler_id="trav_2")
+        from unittest.mock import Mock
+        from llm import ModelInvocationStrategy
+        mock_strategy = Mock(spec=ModelInvocationStrategy)
+        mock_strategy.get_llm_for_use_case.return_value = llm
+        planner = TravelPlanner(strategy=mock_strategy)
+        ctx = TravelContext(session=None, model_strategy=mock_strategy, traveler_id="trav_2")
 
         plan = planner.create_plan_from_query("Book flight from NYC to LON on 2025-08-12", ctx)
         assert plan.status == "executable"

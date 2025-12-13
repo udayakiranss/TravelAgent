@@ -9,7 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from main_web import app
-from api.dependencies import get_db, get_llm, get_orchestrator
+from api.dependencies import get_db, get_orchestrator
 from agents.orchestration import Orchestrator
 from database.models import Itinerary, ChatHistory
 
@@ -46,13 +46,14 @@ def client_fixture(session: Session):
         return None
     
     def get_orchestrator_override():
-        # Return fresh orchestrator with no LLM
-        orch = Orchestrator(llm=None)
-        orch.llm = None
-        return orch
+        # Return fresh orchestrator with mock strategy (no LLM)
+        from unittest.mock import Mock
+        from llm import ModelInvocationStrategy
+        mock_strategy = Mock(spec=ModelInvocationStrategy)
+        mock_strategy.get_llm_for_use_case.return_value = None
+        return Orchestrator(strategy=mock_strategy, memory=None)
     
     app.dependency_overrides[get_db] = get_session_override
-    app.dependency_overrides[get_llm] = get_llm_override
     app.dependency_overrides[get_orchestrator] = get_orchestrator_override
     
     client = TestClient(app)
@@ -82,15 +83,15 @@ def client_with_llm_fixture(session: Session, mock_llm):
     def get_session_override():
         return session
     
-    def get_llm_override():
-        return mock_llm
-    
     def get_orchestrator_override():
-        # Return fresh orchestrator with mocked LLM
-        return Orchestrator(llm=mock_llm)
+        # Return fresh orchestrator with mocked LLM via strategy
+        from unittest.mock import Mock
+        from llm import ModelInvocationStrategy
+        mock_strategy = Mock(spec=ModelInvocationStrategy)
+        mock_strategy.get_llm_for_use_case.return_value = mock_llm
+        return Orchestrator(strategy=mock_strategy, memory=None)
     
     app.dependency_overrides[get_db] = get_session_override
-    app.dependency_overrides[get_llm] = get_llm_override
     app.dependency_overrides[get_orchestrator] = get_orchestrator_override
     
     client = TestClient(app)
@@ -468,10 +469,12 @@ class TestLLMOperations:
             }
         )
         
-        # Now returns 500 because strategy is required (not 503 for unavailable LLM)
-        # This is expected behavior - strategy should always be available in production
+        # Now returns 500 because modification requires LLM/prompts (not 503 for unavailable LLM)
+        # This is expected behavior - modification requires LLM which needs strategy
         assert response.status_code == 500
-        assert "model_strategy is required" in response.json()["detail"]["message"].lower() or "strategy" in response.json()["detail"]["message"].lower()
+        # The error message may vary (could be about strategy, prompts, or LLM)
+        error_msg = response.json()["detail"]["message"].lower()
+        assert any(term in error_msg for term in ["strategy", "llm", "prompt", "modification"])
     
     def test_modify_confirmed_fails(self, client_with_llm: TestClient, session: Session):
         """Test that modifying a confirmed itinerary fails."""

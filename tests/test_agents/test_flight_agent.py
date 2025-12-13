@@ -62,7 +62,7 @@ class TestFlightBookingAgent:
         # Create mock strategy and ctx
         mock_strategy = Mock(spec=ModelInvocationStrategy)
         mock_strategy.get_prompt_for_use_case.return_value = "You are a Flight Booking Agent. Based on the task and parameters, determine which tool to use.\n\nAvailable tools: search_flights, compare_flights, book_flight\nTask: find_flights\nParameters: {'from': 'NYC', 'to': 'LON', 'date': '2025-08-12'}\n\nRespond with only the tool name to use."
-        ctx = TravelContext(session=None, llm=mock_llm, model_strategy=mock_strategy, traveler_id="test")
+        ctx = TravelContext(session=None, model_strategy=mock_strategy, traveler_id="test")
         
         params = {"from": "NYC", "to": "LON", "date": "2025-08-12"}
         result = agent.execute("find_flights", params, ctx) # Ambiguous task

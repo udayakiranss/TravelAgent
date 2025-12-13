@@ -29,45 +29,34 @@ logger = get_logger()
 class Orchestrator:
     """Orchestrator that coordinates multiple agents to fulfill user intents"""
     
-    def __init__(self, llm: Optional[LLMProvider] = None, 
+    def __init__(self, 
                  strategy: Optional[ModelInvocationStrategy] = None,
-                 memory=None, 
-                 model_name: str = "gpt-4o", model_provider: str = "openai"):
+                 memory=None):
         """
         Initialize orchestrator
         
         Args:
-            llm: Optional LLM provider (Legacy)
-            strategy: Model Strategy (Preferred)
+            strategy: Model Strategy (Required for LLM access)
             memory: Optional memory for conversation history
-            model_name: Model name for LLM (if creating new provider)
-            model_provider: Model provider (if creating new provider)
         """
-        self.strategy = strategy
-        self.llm = llm
+        if strategy is None:
+            raise ValueError("Orchestrator requires model_strategy parameter. Use ModelInvocationStrategy() to create one.")
         
-        # Initialize legacy LLM if needed and no strategy
-        if self.llm is None and self.strategy is None:
-            try:
-                self.llm = create_llm_provider(
-                    model_name=model_name,
-                    model_provider=model_provider,
-                    temperature=0
-                )
-            except Exception as e:
-                logger.warning(f"Could not initialize LLM: {e}")
-                self.llm = None
+        self.strategy = strategy
         
         self.memory = memory
         
-        # Determine agent LLM
-        # Use TASK_ROUTING (or similar) from strategy, or fallback to legacy LLM
-        agent_llm = self.llm
-        if self.strategy:
-             try:
-                 agent_llm = self.strategy.get_llm_for_use_case(UseCase.TASK_ROUTING)
-             except Exception:
-                 agent_llm = self.llm
+        # Determine agent LLM from strategy
+        agent_llm = None
+        try:
+            agent_llm = self.strategy.get_llm_for_use_case(UseCase.TASK_ROUTING)
+        except Exception:
+            # Fallback to planner use case if task routing not available
+            try:
+                agent_llm = self.strategy.get_llm_for_use_case(UseCase.PLANNER)
+            except Exception:
+                logger.warning("Could not get LLM from strategy for agents, agents will work without LLM")
+                agent_llm = None
         
         # Initialize agents
         self.agents = {
@@ -77,8 +66,8 @@ class Orchestrator:
             'ItineraryAgent': ItineraryAgent(llm=agent_llm),
             'PaymentAgent': PaymentAgent(llm=agent_llm),
         }
-        # Planner handles its own LLM resolution now if passed strategy
-        self.planner = TravelPlanner(llm=self.llm, strategy=self.strategy)
+        # Planner uses strategy for LLM access
+        self.planner = TravelPlanner(strategy=self.strategy)
         logger.info(f"Orchestrator initialized with {len(self.agents)} agents")
     
     # =========================================================================
@@ -298,7 +287,11 @@ class Orchestrator:
                  logger.debug(f"Strategy summary LLM lookup failed: {e}")
                  
         if not summary_llm:
-             summary_llm = ctx.llm or self.llm
+            # Fallback: try to get any LLM from strategy
+            try:
+                summary_llm = self.strategy.get_llm_for_use_case(UseCase.PLANNER)
+            except Exception:
+                summary_llm = None
              
         if include_summary and summary_llm:
             try:
@@ -413,94 +406,6 @@ class Orchestrator:
     def cancel_itinerary(self, ctx: "TravelContext") -> "Itinerary":
         """Cancel an itinerary."""
         return self.agents['ItineraryAgent'].cancel(ctx)
-    
-
-    
-    # =========================================================================
-    # Legacy Methods (for backward compatibility)
-    # =========================================================================
-    
-    def run_intent(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute user intent by planning and coordinating agents.
-        
-        .. deprecated::
-            This is a legacy method for non-context-aware execution.
-            Used primarily in tests. For production code, use:
-            - PlanningService.plan_trip() for NL queries
-            - Orchestrator.execute_plan() for executing ExecutionPlan objects
-        """
-        logger.info(f"Running intent: needs={intent.get('needs', [])}")
-
-        # Build plan via deterministic planner
-        plan = self.planner.create_plan(intent, traveler_id=intent.get("traveler_id", ""))
-
-        if plan.status == "needs_clarification":
-            logger.info("Plan requires clarification; returning missing_info.")
-            return {
-                "status": plan.status,
-                "missing_info": [mi.model_dump() for mi in plan.missing_info],
-                "plan_id": plan.plan_metadata.plan_id,
-            }
-
-        # Create minimal ctx for legacy compatibility (agents need ctx for prompts.yaml)
-        # Note: This is a workaround for deprecated method - production code should use execute_plan()
-        from api.context import TravelContext
-        from sqlmodel import Session, create_engine
-        from sqlmodel.pool import StaticPool
-        
-        # Create a minimal in-memory session for legacy compatibility
-        # This won't be used for DB operations in legacy path, but is required by TravelContext
-        engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-        minimal_session = Session(engine)
-        minimal_ctx = TravelContext(
-            session=minimal_session,
-            llm=self.llm,
-            model_strategy=self.strategy,  # Pass strategy so agents can get prompts from prompts.yaml
-            traveler_id=intent.get("traveler_id", ""),
-        )
-
-        # Execute tasks respecting dependencies (simple topo by readiness)
-        results: Dict[str, Any] = {}
-        context: Dict[str, Any] = {}
-        completed = set()
-        remaining = {t.id: t for t in plan.tasks}
-
-        while remaining:
-            ready = [
-                t for t_id, t in remaining.items() if all(dep in completed for dep in t.dependencies)
-            ]
-            if not ready:
-                logger.error("Circular dependency detected in plan tasks")
-                break
-
-            for task in ready:
-                agent_name = task.agent
-                task_name = task.action
-                params = self._enrich_params(dict(task.params), context, {"task": task_name})
-
-                if agent_name in self.agents:
-                    agent = self.agents[agent_name]
-                    try:
-                        result = agent.execute(task_name, params, minimal_ctx)
-                        logger.debug(f"Task {agent_name}.{task_name} completed")
-                        results[f"{agent_name}.{task_name}"] = result
-                        context[agent_name] = result
-                    except Exception as e:
-                        logger.error(f"Task {agent_name}.{task_name} failed: {e}")
-                        error_result = {"error": str(e), "agent": agent_name, "task": task_name}
-                        results[f"{agent_name}.{task_name}"] = error_result
-                        context[agent_name] = error_result
-                else:
-                    logger.error(f"Unknown agent: {agent_name}")
-                    error_result = {"error": f"Unknown agent: {agent_name}"}
-                    results[f"{agent_name}.{task_name}"] = error_result
-
-                completed.add(task.id)
-                remaining.pop(task.id, None)
-
-        logger.info(f"Intent completed: {len(results)} tasks executed")
-        return {"status": "executed", "results": results, "plan_id": plan.plan_metadata.plan_id}
     
     def _enrich_params(self, params: Dict[str, Any], context: Dict[str, Any], 
                       current_task: Dict[str, Any]) -> Dict[str, Any]:

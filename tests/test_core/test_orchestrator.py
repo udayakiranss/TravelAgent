@@ -1,12 +1,35 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 from agents.orchestration import Orchestrator
+from agents.planning import ExecutionPlan, PlanMetadata, PlanTask
+from api.context import TravelContext
+from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel.pool import StaticPool
+from datetime import datetime
+from llm import ModelInvocationStrategy
 
 class TestOrchestrator:
     
     @pytest.fixture
+    def session(self):
+        """Create an in-memory SQLite database session for testing."""
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        SQLModel.metadata.create_all(engine)
+        
+        with Session(engine) as session:
+            yield session
+            
+        SQLModel.metadata.drop_all(engine)
+    
+    @pytest.fixture
     def orchestrator(self, mock_llm):
-        return Orchestrator(llm=mock_llm)
+        mock_strategy = Mock(spec=ModelInvocationStrategy)
+        mock_strategy.get_llm_for_use_case.return_value = mock_llm
+        return Orchestrator(strategy=mock_strategy, memory=None)
 
     def test_initialization(self, orchestrator):
         assert len(orchestrator.agents) == 5
@@ -34,25 +57,42 @@ class TestOrchestrator:
         enriched = orchestrator._enrich_params(params, context, task)
         assert enriched["amount"] == 800
 
-    def test_run_intent_rule_based(self, orchestrator, mock_llm):
-        # Mock planner to return a fixed plan (bypassing actual planner logic for unit test)
-        # However, since we can't easily mock the imported plan_trip function without patching,
-        # we will rely on the fact that plan_trip uses the passed LLM.
+    def test_execute_plan(self, orchestrator, mock_llm, session):
+        # Test that orchestrator correctly executes a plan
+        # Create a plan directly
+        plan = ExecutionPlan(
+            status="executable",
+            missing_info=[],
+            tasks=[
+                PlanTask(
+                    id="t1",
+                    title="Search flights",
+                    agent="FlightBookingAgent",
+                    action="search_flights",
+                    params={"from": "NYC", "to": "LON", "date": "2025-08-12"},
+                    dependencies=[],
+                    parallelizable=False,
+                )
+            ],
+            plan_metadata=PlanMetadata(
+                plan_id="test_plan",
+                created_at=datetime.now().isoformat() + "Z",
+                planner_version="1.0.0",
+                confidence_score=0.9,
+                conversation_turns=1,
+            )
+        )
         
-        # If we want to test orchestrator logic specifically, we should patch agents.planner.plan_trip
-        # But for now let's test the flow with a mocked LLM that returns a plan
+        # Create context
+        ctx = TravelContext(
+            session=session,
+            model_strategy=orchestrator.strategy,
+            traveler_id="test_traveler"
+        )
         
-        mock_llm.invoke_structured.return_value = [
-            {
-                "agent": "FlightBookingAgent",
-                "task": "search_flights",
-                "params": {"from": "NYC", "to": "LON"}
-            }
-        ]
+        # Execute plan
+        result = orchestrator.execute_plan(plan, ctx)
         
-        # Added date to prevent needs_clarification status from planner
-        intent = {"needs": ["flight"], "from": "NYC", "to": "LON", "date": "2025-08-12"}
-        results = orchestrator.run_intent(intent)
-        
-        assert "FlightBookingAgent.search_flights" in results["results"]
+        # execute_plan() returns a dict with options and reservations
+        assert "flight_options" in result or "flight_reservation" in result
 

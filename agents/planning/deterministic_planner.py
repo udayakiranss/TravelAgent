@@ -87,8 +87,19 @@ class DeterministicPlanner:
         )
         start_time = time.perf_counter()
         
-        # Get LLM from context
-        llm = ctx.llm
+        # Get LLM from context strategy
+        llm = None
+        if ctx.model_strategy:
+            try:
+                from llm.strategy.use_cases import UseCase
+                llm = ctx.model_strategy.get_llm_for_use_case(UseCase.INTENT_PARSING)
+            except Exception:
+                # Fallback to planner use case
+                try:
+                    llm = ctx.model_strategy.get_llm_for_use_case(UseCase.PLANNER)
+                except Exception:
+                    llm = None
+        
         preference_summary = getattr(ctx, "preference_summary", None) or "No preferences set"
         
         # Parse query to intent

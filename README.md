@@ -895,25 +895,32 @@ Test coverage includes:
 
 ```python
 from agents.orchestration import Orchestrator
+from agents.planning import TravelPlanner
+from api.services import PlanningService
+from api.context import TravelContext
+from api.schemas import NaturalLanguageQueryRequest
 from llm import ModelInvocationStrategy, UseCase
+from sqlmodel import Session
 
-# Initialize orchestrator (uses Model Invocation Strategy internally)
-orch = Orchestrator()
-
-# The orchestrator automatically uses the configured LLM for each use case
-# You can also manually get LLMs for specific use cases:
+# Initialize components (uses Model Invocation Strategy internally)
 strategy = ModelInvocationStrategy()
-planner_llm = strategy.get_llm_for_use_case(UseCase.PLANNER)
+planner = TravelPlanner(strategy=strategy)
+orchestrator = Orchestrator(strategy=strategy, memory=None)
+planning_service = PlanningService(planner=planner, orchestrator=orchestrator)
 
-# Execute user intent
-intent = {
-    'needs': ['flight', 'hotel'],
-    'from': 'NYC',
-    'to': 'LON',
-    'date': '2025-08-12'
-}
+# Preferred: Use PlanningService for natural language queries
+ctx = TravelContext(session=db_session, model_strategy=strategy, traveler_id="user123")
+request = NaturalLanguageQueryRequest(
+    query="Book a flight from NYC to LON on 2025-08-12 and a hotel",
+    traveler_id="user123"
+)
+response = planning_service.plan_trip(request, ctx)
 
-results = orch.run_intent(intent)
+# Alternative: Use execute_plan() directly for structured ExecutionPlan objects
+# (Useful when you already have a plan from deterministic planner)
+from agents.planning import ExecutionPlan
+plan = planner.deterministic_planner.create_plan_from_intent(intent_dict, traveler_id="user123")
+result = orchestrator.execute_plan(plan, ctx)
 ```
 
 ### Using Model Invocation Strategy Directly

@@ -101,9 +101,13 @@ def mock_llm():
 @pytest.fixture
 def mock_context(mock_session, mock_llm):
     """Create a mock TravelContext."""
+    from unittest.mock import Mock
+    from llm import ModelInvocationStrategy
+    mock_strategy = Mock(spec=ModelInvocationStrategy)
+    mock_strategy.get_llm_for_use_case.return_value = mock_llm
     ctx = TravelContext(
         session=mock_session,
-        llm=mock_llm,
+        model_strategy=mock_strategy,
         traveler_id="user_123",
     )
     return ctx

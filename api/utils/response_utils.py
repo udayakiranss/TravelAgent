@@ -129,9 +129,8 @@ def handle_domain_exception(e: Exception):
             )
         )
     elif isinstance(e, LLMUnavailableError):
-        from api.dependencies import get_expected_api_key_name, get_llm_provider_name
+        from api.dependencies import get_expected_api_key_name
         api_key_name = get_expected_api_key_name()
-        provider = get_llm_provider_name()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=create_error_response(

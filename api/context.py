@@ -31,9 +31,6 @@ class TravelContext:
     session: Session
     """Database session for this request."""
     
-    llm: Optional["LLMProvider"]
-    """LLM provider (Deprecated: usage should move to model_strategy)."""
-
     model_strategy: Optional["ModelInvocationStrategy"] = None
     """Model Invocation Strategy for retrieving configured LLMs."""
     
@@ -78,8 +75,15 @@ class TravelContext:
     
     @property
     def has_llm(self) -> bool:
-        """Check if LLM is available for NL processing."""
-        return self.llm is not None
+        """Check if LLM is available for NL processing via model_strategy."""
+        if self.model_strategy:
+            try:
+                from llm.strategy.use_cases import UseCase
+                llm = self.model_strategy.get_llm_for_use_case(UseCase.PLANNER)
+                return llm is not None
+            except Exception:
+                return False
+        return False
     
     def get_chat_history_text(self, limit: int = 10) -> str:
         """Get formatted chat history for LLM prompts."""

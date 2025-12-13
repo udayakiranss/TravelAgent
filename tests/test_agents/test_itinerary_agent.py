@@ -28,7 +28,11 @@ class TestItineraryAgent:
     @pytest.fixture
     def ctx(self, session, mock_llm):
         """Create a TravelContext for testing."""
-        return TravelContext(session=session, llm=mock_llm, traveler_id="test_traveler_1")
+        from unittest.mock import Mock
+        from llm import ModelInvocationStrategy
+        mock_strategy = Mock(spec=ModelInvocationStrategy)
+        mock_strategy.get_llm_for_use_case.return_value = mock_llm
+        return TravelContext(session=session, model_strategy=mock_strategy, traveler_id="test_traveler_1")
 
     def test_build_itinerary(self, agent, ctx):
         """Test building an itinerary using the agent's build method."""
@@ -65,7 +69,7 @@ class TestItineraryAgent:
         from api.context import TravelContext
         ctx_with_id = TravelContext(
             session=ctx.session,
-            llm=ctx.llm,
+            model_strategy=ctx.model_strategy,
             traveler_id=ctx.traveler_id,
             itinerary_id=itinerary_id
         )
@@ -92,7 +96,7 @@ class TestItineraryAgent:
         from api.context import TravelContext
         ctx_with_itinerary = TravelContext(
             session=ctx.session,
-            llm=ctx.llm,
+            model_strategy=ctx.model_strategy,
             traveler_id=ctx.traveler_id,
             itinerary_id=itinerary_id,
             itinerary=created

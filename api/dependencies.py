@@ -61,101 +61,37 @@ PROVIDER_API_KEY_NAMES = {
     "together": "TOGETHER_API_KEY",
 }
 
-# Default models per provider
-# NOTE: This is part of the legacy LLM provider path.
-# Production code should use llm/config/model_strategy.yaml instead.
-PROVIDER_DEFAULT_MODELS = {
-    "openai": "gpt-4o",
-    "google_genai": "gemini-2.0-flash",
-    "anthropic": "claude-3-5-sonnet-latest",
-    "groq": "llama-3.1-70b-versatile",
-    "mistralai": "mistral-large-latest",
-}
-
-
-def get_llm_provider_name() -> str:
+def get_expected_api_key_name(provider: Optional[str] = None) -> str:
     """
-    Get the configured LLM provider name.
+    Get the expected API key environment variable name for a provider.
     
-    .. deprecated::
-        Environment variable LLM_PROVIDER is deprecated.
-        Use llm/config/model_strategy.yaml instead.
+    Args:
+        provider: Optional provider name. If None, tries to detect from model_strategy.yaml
+                  or defaults to 'openai'
+    
+    Returns:
+        Expected API key environment variable name
     """
-    return os.getenv('LLM_PROVIDER', 'openai')
-
-
-def get_expected_api_key_name() -> str:
-    """Get the expected API key environment variable name for current provider."""
-    provider = get_llm_provider_name()
+    if provider is None:
+        # Try to get provider from model_strategy.yaml
+        try:
+            strategy = ModelInvocationStrategy()
+            # Get LLM for planner use case to detect provider
+            llm = strategy.get_llm_for_use_case(UseCase.PLANNER)
+            if llm and hasattr(llm, 'model_provider'):
+                provider = llm.model_provider
+            else:
+                provider = 'openai'  # Default fallback
+        except Exception:
+            provider = 'openai'  # Default fallback
+    
     return PROVIDER_API_KEY_NAMES.get(provider, f"{provider.upper()}_API_KEY")
-
-
-def get_default_model() -> str:
-    """
-    Get the default model for the current provider.
-    
-    .. deprecated::
-        This function is part of the legacy LLM provider path.
-        Use llm/config/model_strategy.yaml instead.
-    """
-    provider = get_llm_provider_name()
-    return PROVIDER_DEFAULT_MODELS.get(provider, "gpt-4o")
-
-
-@lru_cache()
-def get_llm_provider() -> Optional[LLMProvider]:
-    """
-    Get cached LLM provider instance.
-    Lets LangChain handle API key detection automatically.
-    Returns None if initialization fails (typically due to missing API key).
-    
-    .. deprecated::
-        This function uses legacy environment variables (LLM_MODEL, LLM_PROVIDER) 
-        and bypasses the centralized model_strategy.yaml configuration.
-        
-        **Use `ModelInvocationStrategy` instead** for production code:
-        - Use `get_model_strategy()` dependency
-        - Call `strategy.get_llm_for_use_case(UseCase.PLANNER)` etc.
-        
-        This function is kept for backward compatibility only.
-    """
-    import warnings
-    warnings.warn(
-        "get_llm_provider() is deprecated. Use ModelInvocationStrategy via "
-        "get_model_strategy() instead. Environment variables LLM_MODEL and "
-        "LLM_PROVIDER are deprecated - use llm/config/model_strategy.yaml instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    
-    provider = get_llm_provider_name()
-    model = os.getenv('LLM_MODEL', get_default_model())
-    
-    try:
-        llm = create_llm_provider(
-            model_name=model,
-            model_provider=provider,
-            temperature=float(os.getenv('LLM_TEMPERATURE', '0'))
-        )
-        return llm
-    except Exception as e:
-        # Log with provider-specific API key name for clarity
-        api_key_name = get_expected_api_key_name()
-        from utils.logger import get_logger
-        logger = get_logger()
-        logger.warning(f"LLM initialization failed for {provider}/{model}: {e}. "
-                      f"Ensure {api_key_name} is set.")
-        return None
 
 
 @lru_cache()
 def get_model_strategy() -> ModelInvocationStrategy:
     """Get the singleton ModelInvocationStrategy instance."""
     return ModelInvocationStrategy()
-
-def get_llm() -> Optional[LLMProvider]:
-    """Dependency that provides an LLM provider (may be None)."""
-    return get_llm_provider()
 
 
 # =============================================================================
@@ -165,7 +101,6 @@ def get_llm() -> Optional[LLMProvider]:
 def get_context(
     request: Request,
     db: Session = Depends(get_db),
-    llm: Optional[LLMProvider] = Depends(get_llm),
     strategy: ModelInvocationStrategy = Depends(get_model_strategy),
 ) -> TravelContext:
     """
@@ -179,7 +114,7 @@ def get_context(
     Args:
         request: FastAPI Request object
         db: Database session
-        llm: LLM provider (may be None)
+        strategy: Model Invocation Strategy for LLM access
     
     Returns:
         Initialized TravelContext
@@ -189,7 +124,6 @@ def get_context(
     
     return TravelContext(
         session=db,
-        llm=llm,
         model_strategy=strategy,
         request_id=request_id,
         traveler_id="",  # Set by route from request body
@@ -271,9 +205,6 @@ def startup_event():
 def shutdown_event():
     """Run on application shutdown."""
     global _orchestrator_instance
-    
-    # Clear LLM provider cache
-    get_llm_provider.cache_clear()
     
     # Clear orchestrator instance
     _orchestrator_instance = None
