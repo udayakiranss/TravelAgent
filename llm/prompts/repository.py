@@ -11,6 +11,56 @@ class PromptRepository:
     """
     
     @staticmethod
+    def get_structured_prompt(prompt_name: str, **kwargs) -> Dict[str, str]:
+        """
+        Retrieve and format a prompt as structured format (system/user).
+        
+        Returns dict with 'system' and 'user' keys if both exist in config.
+        Raises ValueError if prompt doesn't have system/user structure.
+        
+        Args:
+            prompt_name: The key in prompts.yaml
+            **kwargs: Variables to substitute in the template
+            
+        Returns:
+            Dict with 'system' and 'user' keys (both formatted)
+        """
+        prompts = ConfigLoader.load_prompts()
+        
+        if prompt_name not in prompts:
+            raise ValueError(f"Prompt '{prompt_name}' not found in configuration")
+        
+        prompt_data = prompts[prompt_name]
+        
+        if isinstance(prompt_data, dict):
+            system_prompt = prompt_data.get("system")
+            user_prompt = prompt_data.get("user")
+            
+            if not system_prompt or not user_prompt:
+                raise ValueError(
+                    f"Prompt '{prompt_name}' must have both 'system' and 'user' keys "
+                    "for structured format. Use get_prompt() for single-string prompts."
+                )
+            
+            # Format both with kwargs
+            try:
+                return {
+                    "system": system_prompt.format(**kwargs),
+                    "user": user_prompt.format(**kwargs)
+                }
+            except KeyError as e:
+                logger.error(f"Missing variable for prompt '{prompt_name}': {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Failed to format prompt '{prompt_name}': {e}")
+                raise
+        else:
+            raise ValueError(
+                f"Prompt '{prompt_name}' is not structured (system/user). "
+                "Use get_prompt() for string prompts."
+            )
+    
+    @staticmethod
     def get_prompt(prompt_name: str, **kwargs) -> str:
         """
         Retrieve and format a prompt by name.

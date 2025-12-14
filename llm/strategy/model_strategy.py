@@ -30,6 +30,28 @@ class ModelInvocationStrategy:
         use_case_config = self._get_use_case_config(use_case)
         return ProviderFactory.create_provider(use_case_config)
     
+    def get_structured_prompt_for_use_case(self, use_case: UseCase, **kwargs) -> Dict[str, str]:
+        """
+        Get the formatted prompt as structured format (system/user) for a use case.
+        
+        This enables optimal prompt caching by separating static instructions (system)
+        from variable data (user).
+        
+        Args:
+            use_case: The use case enum value
+            **kwargs: Template variables
+            
+        Returns:
+            Dict with 'system' and 'user' keys (both formatted)
+        """
+        use_case_config = self._get_use_case_config(use_case)
+        prompt_name = use_case_config.get("prompt")
+        
+        if not prompt_name:
+            raise ValueError(f"No prompt defined for use case '{use_case.value}'")
+        
+        return PromptRepository.get_structured_prompt(prompt_name, **kwargs)
+    
     def get_prompt_for_use_case(self, use_case: UseCase, **kwargs) -> str:
         """
         Get the formatted prompt for a use case.

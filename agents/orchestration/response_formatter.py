@@ -1,7 +1,8 @@
 # response_formatter.py
 # LLM-powered formatter that converts JSON agent results to natural language
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional, Literal, Union
 import json
+from pydantic import BaseModel, Field
 from agents.core.llm_provider import LLMProvider
 from utils.logger import get_logger, log_method_entry_exit
 from llm.strategy.model_strategy import ModelInvocationStrategy
@@ -11,6 +12,20 @@ logger = get_logger()
 
 # Supported output formats when LLM is not available
 OutputFormat = Literal["key_value", "structured", "json"]
+
+
+class SummarySchema(BaseModel):
+    """
+    Pydantic schema for structured summary output.
+    
+    Used with with_structured_output() for type-safe validation and automatic parsing.
+    """
+    header: str = Field(description="Welcoming header mentioning destination (1-2 sentences)")
+    flight: str = Field(description="Flight summary (airline, times, duration, price)")
+    hotel: str = Field(description="Hotel summary (name, location, price, rating)")
+    car: str = Field(description="Car summary or 'No car booked'")
+    total_cost: float = Field(description="Total cost as numeric value")
+    closing: str = Field(description="Friendly closing message (1-2 sentences)")
 
 
 class ResponseFormatter:
@@ -59,17 +74,43 @@ class ResponseFormatter:
         prompt = self._build_prompt(results, intent)
         
         try:
-            # Generate natural language summary (disable JSON mode for plain text response)
-            summary = self.llm.invoke(prompt, disable_json_mode=True)
-            logger.info("Successfully generated natural language summary")
-            return summary.strip()
+            # Phase 2: Use JSON mode + template rendering for faster generation
+            # Check if LLM has JSON mode enabled (via model_strategy config)
+            # If enabled, use invoke_structured to get JSON, then render with template
+            # If not enabled, fallback to prose generation
+            
+            # Try structured output approach first (faster - uses with_structured_output)
+            try:
+                # Generate structured JSON summary using Pydantic model
+                # This uses with_structured_output() for automatic validation
+                json_data = self.llm.invoke_structured(
+                    prompt,
+                    response_format=SummarySchema  # Pydantic model, not dict
+                )
+                logger.debug(f"Generated JSON summary fields: {list(json_data.keys())}")
+                
+                # Render JSON into natural language using template
+                summary = self._render_template(json_data)
+                logger.info("Successfully generated natural language summary from JSON template")
+                return summary.strip()
+            except (ValueError, KeyError, TypeError) as json_error:
+                # Structured output not available or failed, fallback to prose generation
+                logger.debug(f"Structured output not available or failed: {json_error}, falling back to prose generation")
+                summary = self.llm.invoke(prompt, disable_json_mode=True)
+                logger.info("Successfully generated natural language summary (prose)")
+                return summary.strip()
         except Exception as e:
             logger.error(f"Failed to generate natural language summary: {e}", exc_info=True)
             # Return a basic fallback summary
             return self._fallback_format(results, intent)
     
-    def _build_prompt(self, results: Dict[str, Any], intent: Dict[str, Any]) -> str:
-        """Build the LLM prompt for formatting results - must come from prompts.yaml"""
+    def _build_prompt(self, results: Dict[str, Any], intent: Dict[str, Any]) -> Union[str, Dict[str, str]]:
+        """
+        Build the LLM prompt for formatting results - returns structured format if available.
+        
+        Returns structured format (dict with system/user) for optimal prompt caching,
+        falls back to string format for backward compatibility.
+        """
         
         # Extract key information from intent
         origin = intent.get('from', 'Unknown')
@@ -89,16 +130,35 @@ class ResponseFormatter:
             )
         
         try:
-            prompt = self.model_strategy.get_prompt_for_use_case(
-                UseCase.SUMMARY_GENERATION,
-                origin=origin,
-                destination=destination,
-                date=date,
-                services=services,
-                results_json=results_json
-            )
-            logger.debug(f"Retrieved prompt from prompts.yaml ({len(prompt)} characters)")
-            return prompt
+            # Try to get structured prompt (system/user) for optimal caching
+            try:
+                prompt = self.model_strategy.get_structured_prompt_for_use_case(
+                    UseCase.SUMMARY_GENERATION,
+                    origin=origin,
+                    destination=destination,
+                    date=date,
+                    services=services,
+                    results_json=results_json
+                )
+                logger.debug(
+                    f"Retrieved structured prompt from prompts.yaml "
+                    f"(system: {len(prompt.get('system', ''))} chars, "
+                    f"user: {len(prompt.get('user', ''))} chars)"
+                )
+                return prompt
+            except (ValueError, KeyError):
+                # Fallback to regular prompt if structured not available
+                logger.debug("Structured prompt not available, using regular prompt")
+                prompt = self.model_strategy.get_prompt_for_use_case(
+                    UseCase.SUMMARY_GENERATION,
+                    origin=origin,
+                    destination=destination,
+                    date=date,
+                    services=services,
+                    results_json=results_json
+                )
+                logger.debug(f"Retrieved prompt from prompts.yaml ({len(prompt)} characters)")
+                return prompt
         except Exception as e:
             logger.error(f"Failed to get prompt from prompts.yaml: {e}")
             raise ValueError(f"Cannot proceed without prompt from prompts.yaml: {e}") from e
@@ -210,6 +270,59 @@ class ResponseFormatter:
         lines.append("=" * 50)
         
         return "\n".join(lines)
+    
+    def _render_template(self, json_data: Dict[str, Any]) -> str:
+        """
+        Render JSON summary fields into natural language using template.
+        
+        This method converts structured JSON fields (from LLM) into a formatted
+        natural language summary. This is much faster than having the LLM generate
+        full prose (Phase 2 optimization).
+        
+        Args:
+            json_data: Dictionary with header, flight, hotel, car, total_cost, closing
+            
+        Returns:
+            Formatted natural language summary
+        """
+        header = json_data.get("header", "")
+        flight = json_data.get("flight", "Flight information unavailable")
+        hotel = json_data.get("hotel", "Hotel information unavailable")
+        car = json_data.get("car", "No car booked")
+        total_cost = json_data.get("total_cost", 0)
+        closing = json_data.get("closing", "")
+        
+        # Format total cost with currency
+        if isinstance(total_cost, (int, float)) and total_cost > 0:
+            cost_str = f"${total_cost:.2f}"
+        else:
+            cost_str = str(total_cost) if total_cost else "N/A"
+        
+        # Build summary with template
+        summary_parts = []
+        
+        if header:
+            summary_parts.append(header)
+            summary_parts.append("")  # Blank line
+        
+        if flight:
+            summary_parts.append(f"Flight: {flight}")
+        
+        if hotel:
+            summary_parts.append(f"Hotel: {hotel}")
+        
+        if car:
+            summary_parts.append(f"Car: {car}")
+        
+        if total_cost and isinstance(total_cost, (int, float)) and total_cost > 0:
+            summary_parts.append("")  # Blank line
+            summary_parts.append(f"Total Estimated Cost: {cost_str}")
+        
+        if closing:
+            summary_parts.append("")  # Blank line
+            summary_parts.append(closing)
+        
+        return "\n".join(summary_parts)
     
     def _format_json(self, results: Dict[str, Any], intent: Dict[str, Any]) -> str:
         """Format results as JSON"""

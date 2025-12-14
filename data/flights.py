@@ -11,6 +11,8 @@ FLIGHTS = [
     {"id": "F006", "from": "BLR", "to": "DXB", "date": "2026-04-20", "price": 310, "airline": "Etihad", "departure": "11:00", "arrival": "13:30", "duration": "4h 30m"},
     
     # Return flights: Dubai (DXB) to Bangalore (BLR)
+    {"id": "F006A", "from": "DXB", "to": "BLR", "date": "2026-04-01", "price": 350, "airline": "Emirates", "departure": "09:00", "arrival": "14:30", "duration": "4h 30m"},
+    {"id": "F006B", "from": "DXB", "to": "BLR", "date": "2026-04-01", "price": 280, "airline": "IndiGo", "departure": "15:00", "arrival": "20:30", "duration": "4h 30m"},
     {"id": "F007", "from": "DXB", "to": "BLR", "date": "2026-04-06", "price": 340, "airline": "Emirates", "departure": "09:00", "arrival": "14:30", "duration": "4h 30m"},
     {"id": "F008", "from": "DXB", "to": "BLR", "date": "2026-04-06", "price": 260, "airline": "IndiGo", "departure": "15:00", "arrival": "20:30", "duration": "4h 30m"},
     {"id": "F009", "from": "DXB", "to": "BLR", "date": "2026-04-10", "price": 300, "airline": "Air India", "departure": "18:00", "arrival": "23:30", "duration": "4h 30m"},

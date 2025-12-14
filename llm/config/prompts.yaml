@@ -73,24 +73,18 @@ prompts:
       Respond with ONLY the JSON object.
 
   summary_generation_base:
-    system: You are a friendly travel assistant.
-    user: |
-      Summarize the booking in a warm, concise tone. Plain text, no markdown.
+    system: |
+      You are a friendly travel assistant. Summarize travel bookings in a warm, concise tone. 
+      Use plain text, no markdown.
       
+      Include: header with destination, flight (airline/times/price), hotel (name/price/rating), 
+      car or unavailable, total cost, friendly close. Use natural dates and currency symbols.
+      
+      150-200 words.
+    user: |
       Travel Request: {origin} → {destination} on {date}
       Services: {services}
       Booking Results: {results_json}
-      
-      Include:
-      • Header with destination
-      • Flight details (airline, times, duration, price)
-      • Hotel (name, location, price, rating)
-      • Car (or say unavailable)
-      • Total cost + friendly close
-      • Natural dates (e.g., "April 1st")
-      • Prices with currency symbol (e.g., "$350")
-      
-      150-200 words.
 
   task_routing_base:
     system: You are a {agent_name}.

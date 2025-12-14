@@ -33,9 +33,9 @@ use_cases:
     prompt: summary_generation_base
     overrides:
       temperature: 0.3
-      enable_json_mode: false
-      max_tokens: 500
-      enable_prompt_caching: false
+      enable_json_mode: true
+      max_tokens: 200
+      enable_prompt_caching: true
 
   task_routing:
     provider: openai
