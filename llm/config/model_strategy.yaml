@@ -1,9 +1,6 @@
 # Model Strategy Configuration
 # 
-# Cache Configuration Options (in overrides):
-#   - enable_prompt_caching: true/false - Enable prompt caching for this use case
-#   - cache_key_prefix: string - Optional prefix for cache keys (e.g., "planner_v1")
-#   - cache_ttl: string - Cache TTL for Anthropic (e.g., "1h", "24h") - not used for OpenAI
+#
 #
 # Note: Prompt caching requires structured prompts (system/user format) for optimal results.
 
@@ -16,8 +13,6 @@ use_cases:
       temperature: 0
       enable_json_mode: true
       max_tokens: 4000
-      enable_prompt_caching: true
-      cache_key_prefix: planner_v1  # Optional: Custom prefix for cache keys
       timeout: 30
       max_retries: 3
     fallback:
@@ -26,9 +21,7 @@ use_cases:
       overrides:
         temperature: 0
         enable_json_mode: true
-        enable_prompt_caching: true
-        cache_ttl: 24h  # Cache TTL for Anthropic (1h, 24h, etc.)
-        cache_key_prefix: planner_v1
+
 
   intent_parsing:
     provider: openai
@@ -48,8 +41,7 @@ use_cases:
       temperature: 0.3
       enable_json_mode: true
       max_tokens: 200
-      enable_prompt_caching: true
-      cache_key_prefix: summary_v1  # Optional: Custom prefix for cache keys
+
 
   task_routing:
     provider: openai
@@ -78,7 +70,7 @@ providers:
     capabilities:
       json_mode: true
       tool_binding: true
-      prompt_caching: true
+      tool_binding: true
     models:
       gpt-4o:
         supports_json_mode: true
@@ -116,7 +108,7 @@ providers:
     capabilities:
       json_mode: true
       tool_binding: true
-      prompt_caching: true  # Supported via cache_control parameter
+      tool_binding: true
     models:
       claude-3-5-sonnet-latest:
         supports_json_mode: true
@@ -134,7 +126,7 @@ providers:
     capabilities:
       json_mode: true
       tool_binding: true
-      prompt_caching: false
+      tool_binding: true
     models:
       gemini-2.0-flash:
         supports_json_mode: true
@@ -151,7 +143,7 @@ providers:
     capabilities:
       json_mode: false
       tool_binding: false
-      prompt_caching: false
+      tool_binding: false
     models:
       llama-3.1-70b-versatile:
         supports_json_mode: false

@@ -13,7 +13,7 @@ class LLMProvider(ABC):
         self.model_name = model_name
         self.temperature = temperature
         self.config = kwargs
-        self.enable_prompt_caching = kwargs.get("enable_prompt_caching", False)
+        self.config = kwargs
         
     @abstractmethod
     def invoke(self, prompt: Union[str, Dict[str, str]], **kwargs) -> str:
@@ -61,25 +61,7 @@ class LLMProvider(ABC):
         """Bind tools to the LLM (returns a runnable)."""
         pass
     
-    def extract_cache_usage(self, response: Any) -> Optional[Dict[str, int]]:
-        """
-        Extract cache usage information from LLM response.
-        
-        This is a helper method that can be overridden by provider implementations
-        to extract provider-specific cache usage metadata.
-        
-        Args:
-            response: The LLM response object
-            
-        Returns:
-            Dict with cache usage info, or None if not available.
-            Format: {
-                'cache_read_tokens': int,  # Tokens read from cache
-                'cache_write_tokens': int,  # Tokens written to cache (if available)
-            }
-        """
-        # Default implementation - providers should override
-        return None
+
 
     def _parse_json(self, text: str) -> Dict[str, Any]:
         """Safe JSON parsing with markdown stripping."""

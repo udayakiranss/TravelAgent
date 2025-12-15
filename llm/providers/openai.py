@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from .base import LLMProvider
-from .cache_manager import CacheKeyManager
+from .base import LLMProvider
 from .factory import ProviderFactory
 from utils.logger import Timer
 
@@ -19,9 +19,7 @@ class OpenAIProvider(LLMProvider):
         
         # Extract provider-specific settings
         self.enable_json_mode = kwargs.get("enable_json_mode", False)
-        # Cache configuration
-        self.cache_ttl = kwargs.get("cache_ttl", "24h")  # Not used for OpenAI but kept for consistency
-        self.cache_key_prefix = kwargs.get("cache_key_prefix", None)
+
         
         model_kwargs = {}
         if self.enable_json_mode:
@@ -52,22 +50,7 @@ class OpenAIProvider(LLMProvider):
             # Skip timing if called internally (e.g., from invoke_structured)
             skip_timing = kwargs.pop("_skip_timing", False)
             
-            # Extract cache-related kwargs
-            cache_key = kwargs.pop("cache_key", None)
-            use_case = kwargs.pop("use_case", None)
-            cache_key_prefix = kwargs.pop("cache_key_prefix", self.cache_key_prefix)
-            
-            # Generate cache key if caching is enabled
-            prompt_cache_key = None
-            if self.enable_prompt_caching:
-                system_prompt = CacheKeyManager.extract_system_prompt(prompt)
-                if CacheKeyManager.should_use_caching(system_prompt, self.enable_prompt_caching):
-                    prompt_cache_key = cache_key or CacheKeyManager.generate_cache_key(
-                        system_prompt=system_prompt,
-                        use_case=use_case,
-                        prefix=cache_key_prefix
-                    )
-                    logger.debug(f"Using prompt cache key: {prompt_cache_key}")
+
             
             def _do_invoke():
                 # Handle structured prompt (dict with system/user) for optimal caching
@@ -118,10 +101,7 @@ class OpenAIProvider(LLMProvider):
                 with Timer(f"LLM call ({self.model_name})", level="INFO") as timer:
                     response = _do_invoke()
             
-            # Log cache usage if available
-            cache_usage = self.extract_cache_usage(response)
-            if cache_usage and cache_usage.get("cache_read_tokens", 0) > 0:
-                logger.info(f"Cache hit: {cache_usage['cache_read_tokens']} tokens read from cache")
+
                 
             return response.content if hasattr(response, 'content') else str(response)
         except Exception as e:
@@ -259,49 +239,6 @@ class OpenAIProvider(LLMProvider):
         """Bind tools to the LLM."""
         return self.llm.bind_tools(tools)
     
-    def extract_cache_usage(self, response: Any) -> Optional[Dict[str, int]]:
-        """
-        Extract cache usage information from OpenAI response.
-        
-        Args:
-            response: The OpenAI response object
-            
-        Returns:
-            Dict with cache usage info, or None if not available.
-            Format: {
-                'cache_read_tokens': int,  # Tokens read from cache
-            }
-        """
-        try:
-            # OpenAI stores cache usage in usage_metadata.input_token_details.cache_read
-            if hasattr(response, 'usage_metadata'):
-                usage_metadata = response.usage_metadata
-                if hasattr(usage_metadata, 'input_token_details'):
-                    token_details = usage_metadata.input_token_details
-                    if hasattr(token_details, 'cache_read_tokens'):
-                        cache_read = token_details.cache_read_tokens
-                        if cache_read and cache_read > 0:
-                            return {
-                                'cache_read_tokens': cache_read
-                            }
-            
-            # Alternative: Check response_metadata
-            if hasattr(response, 'response_metadata'):
-                metadata = response.response_metadata
-                # Check for cache usage in various possible locations
-                if 'token_usage' in metadata:
-                    token_usage = metadata['token_usage']
-                    if 'cache_read_tokens' in token_usage:
-                        return {
-                            'cache_read_tokens': token_usage['cache_read_tokens']
-                        }
-            
-            return None
-        except Exception as e:
-            logger.debug(f"Could not extract cache usage: {e}")
-            return None
-        
-            return None
-        
+
 # Register the provider
 ProviderFactory.register_provider("openai", OpenAIProvider)
