@@ -11,7 +11,7 @@ from agents.core import (
     LLMProvider,
     create_llm_provider,
     extract_token_usage,
-    route_task,
+
     SimpleMemory,
     create_memory,
 )
@@ -50,7 +50,7 @@ __all__ = [
     "LLMProvider",
     "create_llm_provider",
     "extract_token_usage",
-    "route_task",
+
     "SimpleMemory",
     "create_memory",
     # Planning

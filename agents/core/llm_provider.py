@@ -8,7 +8,7 @@ from llm.providers.factory import ProviderFactory
 logger = logging.getLogger(__name__)
 
 # Re-export LLMProvider for compatibility
-__all__ = ["LLMProvider", "create_llm_provider", "extract_token_usage", "LangChainLLMProvider"]
+__all__ = ["LLMProvider", "create_llm_provider", "extract_token_usage"]
 
 def extract_token_usage(response) -> Optional[Dict[str, int]]:
     """Extract token usage from an LLM response if available."""
@@ -48,9 +48,7 @@ def extract_token_usage(response) -> Optional[Dict[str, int]]:
     except Exception:
         return None
 
-# Dummy class for compatibility if explicitly imported
-class LangChainLLMProvider(LLMProvider):
-    pass
+
 
 def create_llm_provider(model_name: str = "gpt-4o", 
                        model_provider: str = "openai",
