@@ -5,7 +5,7 @@ import json
 import time
 
 from agents.planning.planner import TravelPlanner
-from agents.core.llm_provider import LLMProvider, create_llm_provider, extract_token_usage
+from agents.core.llm_provider import create_llm_provider
 from agents.domain.flight_booking_agent import FlightBookingAgent
 from agents.domain.hotel_booking_agent import HotelBookingAgent
 from agents.domain.car_rental_agent import CarRentalAgent
