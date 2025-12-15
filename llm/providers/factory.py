@@ -1,16 +1,22 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Type
 import logging
 from .base import LLMProvider
-from .openai import OpenAIProvider
-from .anthropic import AnthropicProvider
 
 logger = logging.getLogger(__name__)
 
 class ProviderFactory:
     """Factory for creating LLM providers."""
     
-    @staticmethod
-    def create_provider(provider_config: Dict[str, Any], overrides: Optional[Dict[str, Any]] = None) -> LLMProvider:
+    _registry: Dict[str, Type[LLMProvider]] = {}
+    
+    @classmethod
+    def register_provider(cls, name: str, provider_cls: Type[LLMProvider]):
+        """Register a provider class."""
+        cls._registry[name] = provider_cls
+        logger.debug(f"Registered LLM provider: {name}")
+    
+    @classmethod
+    def create_provider(cls, provider_config: Dict[str, Any], overrides: Optional[Dict[str, Any]] = None) -> LLMProvider:
         """
         Create a provider instance based on config.
         
@@ -59,19 +65,14 @@ class ProviderFactory:
         if "cache_key_prefix" not in kwargs:
             kwargs["cache_key_prefix"] = config.get("cache_key_prefix", None)
         
-        if provider_name == "openai":
-            return OpenAIProvider(
-                model_name=model_name,
-                temperature=temperature,
-                api_key=api_key,
-                **kwargs
-            )
-        elif provider_name == "anthropic":
-            return AnthropicProvider(
+        provider_name = provider_name.lower()
+        if provider_name in cls._registry:
+            provider_cls = cls._registry[provider_name]
+            return provider_cls(
                 model_name=model_name,
                 temperature=temperature,
                 api_key=api_key,
                 **kwargs
             )
         else:
-            raise ValueError(f"Unsupported provider: {provider_name}")
+            raise ValueError(f"Unsupported provider: {provider_name}. Available: {list(cls._registry.keys())}")

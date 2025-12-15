@@ -1,6 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Union, Type
 from pydantic import BaseModel
+import logging
+import json
+
+logger = logging.getLogger(__name__)
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
@@ -76,3 +80,17 @@ class LLMProvider(ABC):
         """
         # Default implementation - providers should override
         return None
+
+    def _parse_json(self, text: str) -> Dict[str, Any]:
+        """Safe JSON parsing with markdown stripping."""
+        try:
+            clean_text = text.strip()
+            if "```json" in clean_text:
+                clean_text = clean_text.split("```json")[1].split("```")[0]
+            elif "```" in clean_text:
+                clean_text = clean_text.split("```")[1].split("```")[0]
+            
+            return json.loads(clean_text)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON: {e}")
+            raise

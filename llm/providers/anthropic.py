@@ -5,7 +5,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage
 from .base import LLMProvider
 from .cache_manager import CacheKeyManager
-from llm.strategy.use_cases import UseCase
+from .factory import ProviderFactory
 from utils.logger import Timer
 
 logger = logging.getLogger(__name__)
@@ -238,17 +238,7 @@ class AnthropicProvider(LLMProvider):
             logger.debug(f"Could not extract cache usage: {e}")
             return None
 
-    def _parse_json(self, text: str) -> Dict[str, Any]:
-        """Safe JSON parsing."""
-        import json
-        try:
-            clean_text = text.strip()
-            if "```json" in clean_text:
-                clean_text = clean_text.split("```json")[1].split("```")[0]
-            elif "```" in clean_text:
-                clean_text = clean_text.split("```")[1].split("```")[0]
-            
-            return json.loads(clean_text)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON from Anthropic: {e}")
-            raise
+            return None
+        
+# Register the provider
+ProviderFactory.register_provider("anthropic", AnthropicProvider)
