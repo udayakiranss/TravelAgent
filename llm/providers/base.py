@@ -9,6 +9,7 @@ class LLMProvider(ABC):
         self.model_name = model_name
         self.temperature = temperature
         self.config = kwargs
+        self.enable_prompt_caching = kwargs.get("enable_prompt_caching", False)
         
     @abstractmethod
     def invoke(self, prompt: Union[str, Dict[str, str]], **kwargs) -> str:
@@ -18,6 +19,10 @@ class LLMProvider(ABC):
         Args:
             prompt: Either a string prompt or dict with 'system' and 'user' keys.
                     When dict provided, uses structured messages for optimal prompt caching.
+            **kwargs: Additional arguments including:
+                - cache_key: Optional cache key for prompt caching
+                - use_case: Optional use case identifier for cache key generation
+                - cache_key_prefix: Optional prefix for cache key generation
         """
         pass
     
@@ -40,6 +45,10 @@ class LLMProvider(ABC):
             response_format: Either a JSON schema dict or a Pydantic BaseModel class.
                             Pydantic models use with_structured_output() for type-safe validation.
                             Dict schemas use JSON mode for backward compatibility.
+            **kwargs: Additional arguments including:
+                - cache_key: Optional cache key for prompt caching
+                - use_case: Optional use case identifier for cache key generation
+                - cache_key_prefix: Optional prefix for cache key generation
         """
         pass
     
@@ -47,3 +56,23 @@ class LLMProvider(ABC):
     def bind_tools(self, tools: list):
         """Bind tools to the LLM (returns a runnable)."""
         pass
+    
+    def extract_cache_usage(self, response: Any) -> Optional[Dict[str, int]]:
+        """
+        Extract cache usage information from LLM response.
+        
+        This is a helper method that can be overridden by provider implementations
+        to extract provider-specific cache usage metadata.
+        
+        Args:
+            response: The LLM response object
+            
+        Returns:
+            Dict with cache usage info, or None if not available.
+            Format: {
+                'cache_read_tokens': int,  # Tokens read from cache
+                'cache_write_tokens': int,  # Tokens written to cache (if available)
+            }
+        """
+        # Default implementation - providers should override
+        return None

@@ -245,7 +245,8 @@ class DeterministicPlanner:
                         "to": {"type": "string"},
                         "date": {"type": "string"}
                     }
-                }
+                },
+                use_case=UseCase.INTENT_PARSING  # For prompt caching
             )
             duration_ms = (time.perf_counter() - start_time) * 1000
             logger.info(f"⏱ DeterministicPlanner LLM call: {_format_duration(duration_ms)}")

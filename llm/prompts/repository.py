@@ -11,19 +11,20 @@ class PromptRepository:
     """
     
     @staticmethod
-    def get_structured_prompt(prompt_name: str, **kwargs) -> Dict[str, str]:
+    def get_structured_prompt(prompt_name: str, **kwargs) -> Dict[str, Optional[str]]:
         """
         Retrieve and format a prompt as structured format (system/user).
         
-        Returns dict with 'system' and 'user' keys if both exist in config.
-        Raises ValueError if prompt doesn't have system/user structure.
+        Returns dict with 'system' and 'user' keys. System can be None if not provided.
+        This enables optimal prompt caching by separating static instructions (system)
+        from variable data (user).
         
         Args:
             prompt_name: The key in prompts.yaml
             **kwargs: Variables to substitute in the template
             
         Returns:
-            Dict with 'system' and 'user' keys (both formatted)
+            Dict with 'system' (optional) and 'user' keys (both formatted)
         """
         prompts = ConfigLoader.load_prompts()
         
@@ -36,18 +37,23 @@ class PromptRepository:
             system_prompt = prompt_data.get("system")
             user_prompt = prompt_data.get("user")
             
-            if not system_prompt or not user_prompt:
+            # User prompt is required, system can be None (null in YAML)
+            if not user_prompt:
                 raise ValueError(
-                    f"Prompt '{prompt_name}' must have both 'system' and 'user' keys "
-                    "for structured format. Use get_prompt() for single-string prompts."
+                    f"Prompt '{prompt_name}' must have a 'user' key "
+                    "for structured format."
                 )
             
-            # Format both with kwargs
+            # Format both with kwargs (system may be None)
             try:
-                return {
-                    "system": system_prompt.format(**kwargs),
+                result = {
                     "user": user_prompt.format(**kwargs)
                 }
+                if system_prompt:
+                    result["system"] = system_prompt.format(**kwargs)
+                else:
+                    result["system"] = None
+                return result
             except KeyError as e:
                 logger.error(f"Missing variable for prompt '{prompt_name}': {e}")
                 raise

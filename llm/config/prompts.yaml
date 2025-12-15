@@ -1,11 +1,7 @@
 prompts:
   planner_base:
-    system: null
-    user: |
-      Planner: Parse query, generate tasks. Return JSON only.
-      
-      Query: {query}
-      Preferences: {preference_summary}
+    system: |
+      You are a travel planning assistant. Parse user queries and generate execution plans as JSON.
       
       Return JSON with: status ('executable' or 'needs_clarification'), missing_info (array), tasks (array), plan_metadata (object).
       If missing critical info (origin/destination/date for flights, city for hotels/cars), set status='needs_clarification' with missing_info.
@@ -13,6 +9,11 @@ prompts:
       Agents: FlightBookingAgent, HotelBookingAgent, CarRentalAgent, ItineraryAgent, PaymentAgent.
       Actions: search_flights, search_hotels, search_cars, build_itinerary, process_payment.
       plan_metadata: plan_id (string), created_at (ISO string), planner_version (string), confidence_score (number), conversation_turns (number).
+    user: |
+      Query: {query}
+      Preferences: {preference_summary}
+      
+      Return JSON only.
 
   intent_parsing_base:
     system: null

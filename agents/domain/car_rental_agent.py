@@ -1,7 +1,7 @@
 # car_rental_agent.py
 # Car rental agent with multiple tools
 from typing import Dict, Any, Optional, TYPE_CHECKING
-from langchain.tools import tool
+from langchain_core.tools import tool
 from agents.core.base_agent import BaseAgent
 from data.cars import CARS
 from utils.logger import get_logger

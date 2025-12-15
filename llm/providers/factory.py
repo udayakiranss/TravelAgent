@@ -50,6 +50,15 @@ class ProviderFactory:
         if "temperature" in kwargs:
             kwargs.pop("temperature")
         
+        # Extract cache configuration from config (can be in overrides or top-level)
+        # Cache config: enable_prompt_caching, cache_ttl, cache_key_prefix
+        if "enable_prompt_caching" not in kwargs:
+            kwargs["enable_prompt_caching"] = config.get("enable_prompt_caching", False)
+        if "cache_ttl" not in kwargs:
+            kwargs["cache_ttl"] = config.get("cache_ttl", "1h")  # Default 1h for Anthropic, not used for OpenAI
+        if "cache_key_prefix" not in kwargs:
+            kwargs["cache_key_prefix"] = config.get("cache_key_prefix", None)
+        
         if provider_name == "openai":
             return OpenAIProvider(
                 model_name=model_name,

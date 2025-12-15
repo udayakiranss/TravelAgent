@@ -109,3 +109,4 @@ python3 monitor_formatting_logs.py --watch
 
 The implementation is **working correctly**. Structured prompts are being used, the model has been upgraded, and prompt caching is enabled. The latency improvements are visible in subsequent calls (8-32% faster), suggesting the caching is working. Further optimization can be achieved with Phase 2 (JSON mode + template rendering) for more significant gains.
 
+

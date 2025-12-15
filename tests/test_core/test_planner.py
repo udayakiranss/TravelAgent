@@ -113,10 +113,15 @@ class TestPlanner:
 
         from unittest.mock import Mock
         from llm import ModelInvocationStrategy
-        
+
         llm = FakeLLM(llm_payload)
-        # Create mock strategy that provides the prompt
+        # Create mock strategy that provides the structured prompt
         mock_strategy = Mock(spec=ModelInvocationStrategy)
+        # Mock structured prompt (system/user format) for prompt caching
+        mock_strategy.get_structured_prompt_for_use_case.return_value = {
+            "system": "You are a travel planning assistant.",
+            "user": "Query: Book a flight NYC to LON on 2025-08-12\nPreferences: none\n\nReturn JSON only."
+        }
         mock_strategy.get_prompt_for_use_case.return_value = "Generate an execution plan for: Book a flight NYC to LON on 2025-08-12"
         mock_strategy.get_llm_for_use_case.return_value = llm
         

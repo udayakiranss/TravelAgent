@@ -190,7 +190,7 @@ def startup_event():
     global _planner_instance
 
     global _orchestrator_instance
-    
+     
     # Create database tables
     create_db_and_tables()
     

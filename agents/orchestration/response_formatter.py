@@ -85,7 +85,8 @@ class ResponseFormatter:
                 # This uses with_structured_output() for automatic validation
                 json_data = self.llm.invoke_structured(
                     prompt,
-                    response_format=SummarySchema  # Pydantic model, not dict
+                    response_format=SummarySchema,  # Pydantic model, not dict
+                    use_case=UseCase.SUMMARY_GENERATION  # For prompt caching
                 )
                 logger.debug(f"Generated JSON summary fields: {list(json_data.keys())}")
                 

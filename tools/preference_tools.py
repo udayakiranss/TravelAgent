@@ -12,7 +12,7 @@ from typing import Dict, Any
 from pathlib import Path
 import json
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from utils.logger import get_logger
 

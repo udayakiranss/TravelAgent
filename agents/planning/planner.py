@@ -154,12 +154,17 @@ class TravelPlanner:
             return None
         
         try:
-            plan_prompt = strategy_to_use.get_prompt_for_use_case(
+            # Use structured prompt (system/user) for optimal prompt caching
+            plan_prompt = strategy_to_use.get_structured_prompt_for_use_case(
                 UseCase.PLANNER, 
                 query=query, 
                 preference_summary=preference_summary
             )
-            logger.debug("Retrieved planner prompt from prompts.yaml")
+            logger.debug(
+                f"Retrieved structured planner prompt from prompts.yaml "
+                f"(system: {len(plan_prompt.get('system', '') or '')} chars, "
+                f"user: {len(plan_prompt.get('user', '') or '')} chars)"
+            )
         except Exception as e:
             logger.error(
                 f"Failed to load prompt from prompts.yaml: {e}. "
@@ -215,9 +220,11 @@ class TravelPlanner:
 
         try:
             # Phase 1: JSON mode is enabled in LLM provider, so no schema appended to prompt
+            # Pass use_case for prompt caching
             raw_plan = llm.invoke_structured(
                 plan_prompt, 
-                response_format=response_format
+                response_format=response_format,
+                use_case=UseCase.PLANNER
             )
         except Exception as e:
             logger.warning(f"Planner: LLM plan invocation failed: {e}")

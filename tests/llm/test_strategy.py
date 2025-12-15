@@ -47,7 +47,8 @@ def test_strategy_get_llm(mock_env):
 def test_strategy_get_prompt():
     start = ModelInvocationStrategy()
     prompt = start.get_prompt_for_use_case(UseCase.PLANNER, query="test", preference_summary="none")
-    assert "Planner:" in prompt
+    # Updated prompt structure: system prompt contains instructions, user prompt contains query
+    assert "travel planning assistant" in prompt or "Planner:" in prompt
     assert "Query: test" in prompt
 
 def test_fallback_provider(mock_env):

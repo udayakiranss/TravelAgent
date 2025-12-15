@@ -1,7 +1,7 @@
 # itinerary_agent.py
 # Itinerary management agent with database persistence via TravelContext
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
-from langchain.tools import tool
+from langchain_core.tools import tool
 from agents.core.base_agent import BaseAgent
 from utils.logger import get_logger, log_method_entry_exit
 from llm.strategy.use_cases import UseCase
